@@ -101,6 +101,7 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                     lang,
                     timeoutMs,
                     nBestPhonemeCount,
+                    topic,
                 )
                 result.success(true)
             }
