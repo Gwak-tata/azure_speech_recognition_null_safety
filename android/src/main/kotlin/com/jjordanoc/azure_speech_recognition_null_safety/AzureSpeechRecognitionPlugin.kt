@@ -71,6 +71,7 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
         val enableMiscue: Boolean = call.argument("enableMiscue") ?: false
         val nBestPhonemeCount: Int? = call.argument("nBestPhonemeCount") ?: null
         val granularity: PronunciationAssessmentGranularity
+        val topic: String = call.argument("topic") ?: null
         when (granularityString) {
             "text" -> {
                 granularity = PronunciationAssessmentGranularity.FullText
