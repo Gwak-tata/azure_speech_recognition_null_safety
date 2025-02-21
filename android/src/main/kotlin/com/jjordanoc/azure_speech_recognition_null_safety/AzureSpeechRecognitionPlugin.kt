@@ -203,6 +203,7 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
         lang: String,
         timeoutMs: String,
         nBestPhonemeCount: Int?,
+        topic: String?,
     ) {
         val logTag: String = "simpleVoiceWithAssessment"
 
@@ -224,7 +225,12 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                     granularity,
                     enableMiscue
                 )
+            pronunciationConfig.enableProsodyAssessment();
             pronunciationAssessmentConfig.setPhonemeAlphabet(phonemeAlphabet)
+
+            if (topic != null) {
+                pronunciationConfig.enableContentAssessmentWithTopic(topic);
+            }
 
             if (nBestPhonemeCount != null) {
                 pronunciationAssessmentConfig.setNBestPhonemeCount(nBestPhonemeCount)

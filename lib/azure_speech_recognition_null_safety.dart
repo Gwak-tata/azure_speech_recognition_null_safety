@@ -126,7 +126,7 @@ class AzureSpeechRecognition {
   static void simpleVoiceRecognitionWithAssessment({String? referenceText,
     String? phonemeAlphabet,
     String? granularity,
-    bool? enableMiscue, int? nBestPhonemeCount,}) {
+    bool? enableMiscue, int? nBestPhonemeCount, String? topic,}) {
     if ((_subKey != null && _region != null)) {
       _channel.invokeMethod('simpleVoiceWithAssessment', {
         'language': _lang,
@@ -138,6 +138,7 @@ class AzureSpeechRecognition {
         'referenceText': referenceText,
         'phonemeAlphabet': phonemeAlphabet,
         'nBestPhonemeCount': nBestPhonemeCount,
+        'topic': topic,
       });
     } else {
       throw "Error: SpeechRecognitionParameters not initialized correctly";
