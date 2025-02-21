@@ -226,11 +226,11 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                     granularity,
                     enableMiscue
                 )
-            pronunciationConfig.enableProsodyAssessment();
+            pronunciationAssessmentConfig.enableProsodyAssessment();
             pronunciationAssessmentConfig.setPhonemeAlphabet(phonemeAlphabet)
 
             if (topic != null) {
-                pronunciationConfig.enableContentAssessmentWithTopic(topic);
+                pronunciationAssessmentConfig.enableContentAssessmentWithTopic(topic);
             }
 
             if (nBestPhonemeCount != null) {
