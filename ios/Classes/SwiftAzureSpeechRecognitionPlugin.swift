@@ -175,7 +175,7 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
             pronunciationAssessmentConfig?.phonemeAlphabet = phonemeAlphabet
 
             if let topic = topic {
-                pronunciationAssessmentConfig?.enableContentAssessmentWithTopic(topic)
+                pronunciationAssessmentConfig?.enableContentAssessment(withTopic:topic)
             }
 
             if nBestPhonemeCount != nil {
