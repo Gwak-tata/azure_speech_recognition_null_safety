@@ -326,10 +326,10 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                                     for (d in diff.deltas) {
                                         when (d.type) {
                                             DeltaType.EQUAL -> {
-                                                for (i in currentIdx until currentIdx + d.source.size) {
+                                                for (i in currentIdx until currentIdx + d.source.size()) {
                                                     finalWords.add(pronWords[i])
                                                 }
-                                                currentIdx += d.target.size
+                                                currentIdx += d.target.size()
                                             }
 
                                             DeltaType.DELETE, DeltaType.CHANGE -> {
@@ -339,12 +339,12 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                                             }
 
                                             DeltaType.INSERT, DeltaType.CHANGE -> {
-                                                for (i in currentIdx until currentIdx + d.target.size) {
+                                                for (i in currentIdx until currentIdx + d.target.size()) {
                                                     val w = pronWords[i]
                                                     w.errorType = "Insertion"
                                                     finalWords.add(w)
                                                 }
-                                                currentIdx += d.target.size
+                                                currentIdx += d.target.size()
                                             }
                                         }
                                     }
