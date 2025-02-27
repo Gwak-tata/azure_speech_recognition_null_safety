@@ -292,11 +292,29 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                         let resultText = result.text ?? ""
 
                         // 발음 평가 결과 가져오기
-                        let pronResult = try SPXPronunciationAssessmentResult.from(result)
+                        // JSON에서 직접 점수를 추출하는 방법으로 대체
+                        var fluencyScore: Double = 0.0
+                        var prosodyScore: Double = 0.0
+                        var completenessScore: Double = 0.0
+
+                        if let jsonString = pronunciationAssessmentResultJson,
+                           let jsonData = jsonString.data(using: .utf8),
+                           let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+
+                            // NBest 배열에서 첫 번째 항목의 발음 평가 점수 가져오기
+                            if let nBestArray = json["NBest"] as? [[String: Any]],
+                               let firstNBest = nBestArray.first,
+                               let pronAssessment = firstNBest["PronunciationAssessment"] as? [String: Any] {
+
+                                fluencyScore = pronAssessment["FluencyScore"] as? Double ?? 0.0
+                                prosodyScore = pronAssessment["ProsodyScore"] as? Double ?? 0.0
+                                completenessScore = pronAssessment["CompletenessScore"] as? Double ?? 0.0
+                            }
+                        }
 
                         // 초기 점수 저장
-                        fluencyScores.append(pronResult.fluencyScore)
-                        prosodyScores.append(pronResult.prosodyScore)
+                        fluencyScores.append(fluencyScore)
+                        prosodyScores.append(prosodyScore)
 
                         // JSON 응답을 파싱하여 단어 수준 세부 정보 추출
                         if let jsonString = pronunciationAssessmentResultJson,
@@ -394,27 +412,27 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                                 durationSum += durations[i]
                             }
 
-                            let fluencyScore = durationSum > 0 ? fluencyScoreSum / Double(durationSum) : pronResult.fluencyScore
+                            let finalFluencyScore = durationSum > 0 ? fluencyScoreSum / Double(durationSum) : fluencyScore
 
                             // 3. 운율 점수 재계산
-                            let prosodyScore = prosodyScores.count > 0 ? prosodyScores.reduce(0, +) / Double(prosodyScores.count) : pronResult.prosodyScore
+                            let finalProsodyScore = prosodyScores.count > 0 ? prosodyScores.reduce(0, +) / Double(prosodyScores.count) : prosodyScore
 
                             // 4. 완전성 점수 계산
-                            let completenessScore = !referenceWords.isEmpty ? min(Double(validCount) / Double(referenceWords.count) * 100.0, 100.0) : pronResult.completenessScore
+                            let finalCompletenessScore = !referenceWords.isEmpty ? min(Double(validCount) / Double(referenceWords.count) * 100.0, 100.0) : completenessScore
 
                             // 5. 발음 점수 계산
-                            let pronScore = accuracyScore * 0.4 + prosodyScore * 0.2 + fluencyScore * 0.2 + completenessScore * 0.2
+                            let pronScore = accuracyScore * 0.4 + finalProsodyScore * 0.2 + finalFluencyScore * 0.2 + finalCompletenessScore * 0.2
 
                             // 최종 점수 로깅
                             print(String(format: "Final scores - Accuracy: %.2f, Prosody: %.2f, Fluency: %.2f, Completeness: %.2f, Pronunciation: %.2f",
-                                         accuracyScore, prosodyScore, fluencyScore, completenessScore, pronScore))
+                                         accuracyScore, finalProsodyScore, finalFluencyScore, finalCompletenessScore, pronScore))
 
                             // 모든 점수가 포함된 수정된 JSON 생성
                             var modifiedJson = json
                             modifiedJson["AccuracyScore"] = accuracyScore
-                            modifiedJson["ProsodyScore"] = prosodyScore
-                            modifiedJson["FluencyScore"] = fluencyScore
-                            modifiedJson["CompletenessScore"] = completenessScore
+                            modifiedJson["ProsodyScore"] = finalProsodyScore
+                            modifiedJson["FluencyScore"] = finalFluencyScore
+                            modifiedJson["CompletenessScore"] = finalCompletenessScore
                             modifiedJson["PronunciationScore"] = pronScore
 
                             // 단어 수준 평가가 있는 경우 추가
