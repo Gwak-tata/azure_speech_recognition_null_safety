@@ -1,35 +1,23 @@
 package com.jjordanoc.azure_speech_recognition_null_safety
 
+//import androidx.core.app.ActivityCompat;
+
+import android.app.Activity
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import androidx.annotation.NonNull
+import com.microsoft.cognitiveservices.speech.*
+import com.microsoft.cognitiveservices.speech.audio.AudioConfig
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry.Registrar
-import com.microsoft.cognitiveservices.speech.audio.AudioConfig
-import com.microsoft.cognitiveservices.speech.intent.LanguageUnderstandingModel
-import com.microsoft.cognitiveservices.speech.intent.IntentRecognitionResult
-import com.microsoft.cognitiveservices.speech.intent.IntentRecognizer
-import com.bregant.azure_speech_recognition.MicrophoneStream
-import android.app.Activity
-
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
-import java.util.concurrent.Callable
-import android.os.Handler
-import android.os.Looper
-import java.io.File
-import java.io.FileOutputStream
-import java.io.InputStream
-//import androidx.core.app.ActivityCompat;
-import java.net.URI
-import android.util.Log
-import android.text.TextUtils
-import com.microsoft.cognitiveservices.speech.*
-
-import java.util.concurrent.Semaphore
 
 
 /** AzureSpeechRecognitionPlugin */
@@ -211,27 +199,25 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
 
 
         try {
+            val audioInput: AudioConfig = AudioConfig.fromDefaultMicrophoneInput()
 
-            var audioInput: AudioConfig = AudioConfig.fromDefaultMicrophoneInput()
-
-            var config: SpeechConfig =
+            val config: SpeechConfig =
                 SpeechConfig.fromSubscription(speechSubscriptionKey, serviceRegion)
-
             config.speechRecognitionLanguage = lang
             config.setProperty(PropertyId.Speech_SegmentationSilenceTimeoutMs, timeoutMs)
 
-            var pronunciationAssessmentConfig: PronunciationAssessmentConfig =
+            val pronunciationAssessmentConfig: PronunciationAssessmentConfig =
                 PronunciationAssessmentConfig(
                     referenceText,
                     PronunciationAssessmentGradingSystem.HundredMark,
                     granularity,
-                    enableMiscue
+                    enableMiscue ?: false
                 )
-            pronunciationAssessmentConfig.enableProsodyAssessment();
+            pronunciationAssessmentConfig.enableProsodyAssessment()
             pronunciationAssessmentConfig.setPhonemeAlphabet(phonemeAlphabet)
 
             if (topic != null) {
-                pronunciationAssessmentConfig.enableContentAssessmentWithTopic(topic);
+                pronunciationAssessmentConfig.enableContentAssessmentWithTopic(topic)
             }
 
             if (nBestPhonemeCount != null) {
@@ -240,12 +226,18 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
 
             Log.i(logTag, pronunciationAssessmentConfig.toJson())
 
-            val reco: SpeechRecognizer = SpeechRecognizer(config, audioInput)
+            // Lists to store assessment data
+            val recognizedWords = mutableListOf<String>()
+            val pronWords = mutableListOf<Word>()
+            val finalWords = mutableListOf<Word>()
+            val fluencyScores = mutableListOf<Double>()
+            val prosodyScores = mutableListOf<Double>()
+            val durations = mutableListOf<Long>()
 
+            val reco: SpeechRecognizer = SpeechRecognizer(config, audioInput)
             pronunciationAssessmentConfig.applyTo(reco)
 
             val task: Future<SpeechRecognitionResult> = reco.recognizeOnceAsync()
-
             task_global = task
 
             invokeMethod("speech.onRecognitionStarted", null)
@@ -264,12 +256,204 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                     result.properties.getProperty(PropertyId.SpeechServiceResponse_JsonResult)
                 Log.i(logTag, "Final result: $s\nReason: ${result.reason}")
                 Log.i(
-                    logTag, "pronunciationAssessmentResultJson: $pronunciationAssessmentResultJson"
+                    logTag,
+                    "pronunciationAssessmentResultJson: $pronunciationAssessmentResultJson"
                 )
+
                 if (task_global === task) {
                     if (result.reason == ResultReason.RecognizedSpeech) {
-                        invokeMethod("speech.onFinalResponse", s)
-                        invokeMethod("speech.onAssessmentResult", pronunciationAssessmentResultJson)
+                        try {
+                            // Extract scores from the pronunciation assessment result
+                            val pronResult = PronunciationAssessmentResult.fromResult(result)
+
+                            // Store initial scores
+                            fluencyScores.add(pronResult.getFluencyScore())
+                            prosodyScores.add(pronResult.getProsodyScore())
+
+                            // Parse the JSON response to extract word-level details
+                            val jsonReader =
+                                Json.createReader(StringReader(pronunciationAssessmentResultJson))
+                            val jsonObject = jsonReader.readObject()
+                            jsonReader.close()
+
+                            // Process NBest results to get word-level assessments
+                            val nBestArray = jsonObject.getJsonArray("NBest")
+                            for (i in 0 until nBestArray.size()) {
+                                val nBestItem = nBestArray.getJsonObject(i)
+
+                                val wordsArray = nBestItem.getJsonArray("Words")
+                                var durationSum: Long = 0
+
+                                for (j in 0 until wordsArray.size()) {
+                                    val wordItem = wordsArray.getJsonObject(j)
+                                    recognizedWords.add(wordItem.getString("Word"))
+                                    durationSum += wordItem.getJsonNumber("Duration").longValue()
+
+                                    val pronAssessment =
+                                        wordItem.getJsonObject("PronunciationAssessment")
+                                    pronWords.add(
+                                        Word(
+                                            wordItem.getString("Word"),
+                                            pronAssessment.getString("ErrorType"),
+                                            pronAssessment.getJsonNumber("AccuracyScore")
+                                                .doubleValue()
+                                        )
+                                    )
+                                }
+                                durations.add(durationSum)
+                            }
+
+                            // Process miscue detection if enabled
+                            // Split reference text into words and clean up punctuation
+                            val referenceWords =
+                                referenceText.toLowerCase().split(" ").map { word ->
+                                    word.replace(Regex("^\\p{Punct}+|\\p{Punct}+$"), "")
+                                }.toTypedArray()
+
+                            if (enableMiscue == true) {
+                                // Use java-diff-utils library (needs to be added to dependencies)
+                                try {
+                                    val diff = DiffUtils.diff(
+                                        referenceWords.toList(),
+                                        recognizedWords,
+                                        true
+                                    )
+
+                                    var currentIdx = 0
+                                    for (d in diff.deltas) {
+                                        when (d.type) {
+                                            DeltaType.EQUAL -> {
+                                                for (i in currentIdx until currentIdx + d.source.size) {
+                                                    finalWords.add(pronWords[i])
+                                                }
+                                                currentIdx += d.target.size
+                                            }
+
+                                            DeltaType.DELETE, DeltaType.CHANGE -> {
+                                                for (w in d.source.lines) {
+                                                    finalWords.add(Word(w, "Omission"))
+                                                }
+                                            }
+
+                                            DeltaType.INSERT, DeltaType.CHANGE -> {
+                                                for (i in currentIdx until currentIdx + d.target.size) {
+                                                    val w = pronWords[i]
+                                                    w.errorType = "Insertion"
+                                                    finalWords.add(w)
+                                                }
+                                                currentIdx += d.target.size
+                                            }
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(logTag, "Error in diff processing: ${e.message}")
+                                    // Fallback in case diff utils fail
+                                    finalWords.addAll(pronWords)
+                                }
+                            } else {
+                                finalWords.addAll(pronWords)
+                            }
+
+                            // Calculate overall scores
+                            // 1. Calculate accuracy score
+                            var totalAccuracyScore = 0.0
+                            var accuracyCount = 0
+                            var validCount = 0
+
+                            for (word in finalWords) {
+                                if (word.errorType != "Insertion") {
+                                    totalAccuracyScore += word.accuracyScore
+                                    accuracyCount++
+                                }
+
+                                if (word.errorType == "None") {
+                                    validCount++
+                                }
+                            }
+
+                            val accuracyScore =
+                                if (accuracyCount > 0) totalAccuracyScore / accuracyCount else 0.0
+
+                            // 2. Re-calculate fluency score
+                            var fluencyScoreSum = 0.0
+                            var durationSum: Long = 0
+
+                            for (i in fluencyScores.indices) {
+                                fluencyScoreSum += fluencyScores[i] * durations[i]
+                                durationSum += durations[i]
+                            }
+
+                            val fluencyScore =
+                                if (durationSum > 0) fluencyScoreSum / durationSum else pronResult.getFluencyScore()
+
+                            // 3. Re-calculate prosody score
+                            val prosodyScore = if (prosodyScores.isNotEmpty())
+                                prosodyScores.sum() / prosodyScores.size
+                            else
+                                pronResult.getProsodyScore()
+
+                            // 4. Calculate completeness score
+                            val completenessScore = if (referenceWords.isNotEmpty())
+                                (validCount.toDouble() / referenceWords.size * 100).coerceAtMost(
+                                    100.0
+                                )
+                            else
+                                pronResult.getCompletenessScore()
+
+                            // 5. Calculate pronunciation score
+                            val pronScore =
+                                accuracyScore * 0.4 + prosodyScore * 0.2 + fluencyScore * 0.2 + completenessScore * 0.2
+
+                            // Log the final scores
+                            Log.i(
+                                logTag, String.format(
+                                    "Final scores - Accuracy: %.2f, Prosody: %.2f, Fluency: %.2f, " +
+                                            "Completeness: %.2f, Pronunciation: %.2f",
+                                    accuracyScore,
+                                    prosodyScore,
+                                    fluencyScore,
+                                    completenessScore,
+                                    pronScore
+                                )
+                            )
+
+                            // Create modified JSON with all scores
+                            val modifiedJsonObjectBuilder =
+                                javax.json.Json.createObjectBuilder(jsonObject)
+                                    .add("AccuracyScore", accuracyScore)
+                                    .add("ProsodyScore", prosodyScore)
+                                    .add("FluencyScore", fluencyScore)
+                                    .add("CompletenessScore", completenessScore)
+                                    .add("PronunciationScore", pronScore)
+
+                            // Add word-level assessment if available
+                            if (finalWords.isNotEmpty()) {
+                                val wordsArrayBuilder = javax.json.Json.createArrayBuilder()
+
+                                for (word in finalWords) {
+                                    wordsArrayBuilder.add(
+                                        javax.json.Json.createObjectBuilder()
+                                            .add("Word", word.word)
+                                            .add("ErrorType", word.errorType)
+                                            .add("AccuracyScore", word.accuracyScore)
+                                    )
+                                }
+
+                                modifiedJsonObjectBuilder.add("Words", wordsArrayBuilder)
+                            }
+
+                            val modifiedJsonString = modifiedJsonObjectBuilder.build().toString()
+
+                            invokeMethod("speech.onFinalResponse", s)
+                            invokeMethod("speech.onAssessmentResult", modifiedJsonString)
+                        } catch (e: Exception) {
+                            Log.e(logTag, "Error processing assessment results: ${e.message}", e)
+                            invokeMethod("speech.onFinalResponse", s)
+                            invokeMethod(
+                                "speech.onAssessmentResult",
+                                pronunciationAssessmentResultJson
+                            )
+                        }
                     } else {
                         invokeMethod("speech.onFinalResponse", "")
                         invokeMethod("speech.onAssessmentResult", "")
@@ -279,10 +463,8 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
             }
 
         } catch (exec: Exception) {
-            Log.i(logTag, "ERROR")
-            assert(false)
+            Log.e(logTag, "ERROR: ${exec.message}", exec)
             invokeMethod("speech.onException", "Exception: " + exec.message)
-
         }
     }
 
@@ -455,6 +637,28 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
     private fun invokeMethod(method: String, arguments: Any?) {
         handler.post {
             azureChannel.invokeMethod(method, arguments)
+        }
+    }
+
+    static
+    class Word(var word: String, var errorType: String) {
+        var accuracyScore: Double = 0.0
+        var duration: Double = 0.0
+
+        constructor(word: String, errorType: String, accuracyScore: Double) : this(
+            word,
+            errorType
+        ) {
+            this.accuracyScore = accuracyScore
+        }
+
+        constructor(
+            word: String,
+            errorType: String,
+            accuracyScore: Double,
+            duration: Double
+        ) : this(word, errorType, accuracyScore) {
+            this.duration = duration
         }
     }
 }
