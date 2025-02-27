@@ -21,6 +21,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import javax.json.Json
 import javax.json.JsonObject
+import com.github.difflib.DiffUtils
+import com.github.difflib.patch.DeltaType
 
 /** AzureSpeechRecognitionPlugin */
 class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandler {
@@ -279,13 +281,13 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
 
                             // Process NBest results to get word-level assessments
                             val nBestArray = jsonObject.getJsonArray("NBest")
-                            for (i in 0 until nBestArray.size()) {
+                            for (i in 0 until nBestArray.size) {
                                 val nBestItem = nBestArray.getJsonObject(i)
 
                                 val wordsArray = nBestItem.getJsonArray("Words")
                                 var durationSum: Long = 0
 
-                                for (j in 0 until wordsArray.size()) {
+                                for (j in 0 until wordsArray.size) {
                                     val wordItem = wordsArray.getJsonObject(j)
                                     recognizedWords.add(wordItem.getString("Word"))
                                     durationSum += wordItem.getJsonNumber("Duration").longValue()
