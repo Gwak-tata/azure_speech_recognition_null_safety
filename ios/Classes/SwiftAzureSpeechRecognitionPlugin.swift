@@ -619,29 +619,4 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
             }
         }
     }
-
-    class Word {
-        var word: String
-        var errorType: String
-        var accuracyScore: Double = 0.0
-        var duration: Double = 0.0
-
-        init(word: String, errorType: String) {
-            self.word = word
-            self.errorType = errorType
-        }
-
-        init(word: String, errorType: String, accuracyScore: Double) {
-            self.word = word
-            self.errorType = errorType
-            self.accuracyScore = accuracyScore
-        }
-
-        init(word: String, errorType: String, accuracyScore: Double, duration: Double) {
-            self.word = word
-            self.errorType = errorType
-            self.accuracyScore = accuracyScore
-            self.duration = duration
-        }
-    }
 }
