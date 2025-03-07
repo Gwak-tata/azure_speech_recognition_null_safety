@@ -344,67 +344,67 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                                             pronunciationScore))
 
                                 // 단어 수준 평가 추가 (JSON에서 직접 추출)
-//                                if let originalJsonString = originalJson,
-//                                   let jsonData = originalJsonString.data(using: .utf8),
-//                                   let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-//                                   let nBestArray = jsonObject["NBest"] as? [[String: Any]],
-//                                   let firstNBest = nBestArray.first,
-//                                   let wordsArray = firstNBest["Words"] as? [[String: Any]] {
-//
-//                                    var processedWords: [[String: Any]] = []
-//
-//                                    for wordItem in wordsArray {
-//                                        var wordDict: [String: Any] = [:]
-//
-//                                        if let word = wordItem["Word"] as? String {
-//                                            wordDict["Word"] = word
-//                                        }
-//
-//                                        if let pronAssessment = wordItem["PronunciationAssessment"] as? [String: Any] {
-//                                            if let accuracyScore = pronAssessment["AccuracyScore"] as? Double {
-//                                                wordDict["AccuracyScore"] = accuracyScore
-//                                            }
-//
-//                                            if let errorType = pronAssessment["ErrorType"] as? String {
-//                                                wordDict["ErrorType"] = errorType
-//                                            }
-//                                        }
-//
-//                                        // 음소 레벨 정보 추가 (사용 가능한 경우)
-//                                        if granularity == .phoneme, let phonemesArray = wordItem["Phonemes"] as? [[String: Any]] {
-//                                            var processedPhonemes: [[String: Any]] = []
-//
-//                                            for phonemeItem in phonemesArray {
-//                                                var phonemeDict: [String: Any] = [:]
-//
-//                                                if let phoneme = phonemeItem["Phoneme"] as? String {
-//                                                    phonemeDict["Phoneme"] = phoneme
-//                                                }
-//
-//                                                if let phonemePronAssessment = phonemeItem["PronunciationAssessment"] as? [String: Any],
-//                                                   let accuracyScore = phonemePronAssessment["AccuracyScore"] as? Double {
-//                                                    phonemeDict["AccuracyScore"] = accuracyScore
-//                                                }
-//
-//                                                if !phonemeDict.isEmpty {
-//                                                    processedPhonemes.append(phonemeDict)
-//                                                }
-//                                            }
-//
-//                                            if !processedPhonemes.isEmpty {
-//                                                wordDict["Phonemes"] = processedPhonemes
-//                                            }
-//                                        }
-//
-//                                        if !wordDict.isEmpty {
-//                                            processedWords.append(wordDict)
-//                                        }
-//                                    }
-//
-//                                    if !processedWords.isEmpty {
-//                                        jsonBuilder["Words"] = processedWords
-//                                    }
-//                                }
+                                if let originalJsonString = originalJson,
+                                   let jsonData = originalJsonString.data(using: .utf8),
+                                   let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                                   let nBestArray = jsonObject["NBest"] as? [[String: Any]],
+                                   let firstNBest = nBestArray.first,
+                                   let wordsArray = firstNBest["Words"] as? [[String: Any]] {
+
+                                    var processedWords: [[String: Any]] = []
+
+                                    for wordItem in wordsArray {
+                                        var wordDict: [String: Any] = [:]
+
+                                        if let word = wordItem["Word"] as? String {
+                                            wordDict["Word"] = word
+                                        }
+
+                                        if let pronAssessment = wordItem["PronunciationAssessment"] as? [String: Any] {
+                                            if let accuracyScore = pronAssessment["AccuracyScore"] as? Double {
+                                                wordDict["AccuracyScore"] = accuracyScore
+                                            }
+
+                                            if let errorType = pronAssessment["ErrorType"] as? String {
+                                                wordDict["ErrorType"] = errorType
+                                            }
+                                        }
+
+                                        // 음소 레벨 정보 추가 (사용 가능한 경우)
+                                        if granularity == .phoneme, let phonemesArray = wordItem["Phonemes"] as? [[String: Any]] {
+                                            var processedPhonemes: [[String: Any]] = []
+
+                                            for phonemeItem in phonemesArray {
+                                                var phonemeDict: [String: Any] = [:]
+
+                                                if let phoneme = phonemeItem["Phoneme"] as? String {
+                                                    phonemeDict["Phoneme"] = phoneme
+                                                }
+
+                                                if let phonemePronAssessment = phonemeItem["PronunciationAssessment"] as? [String: Any],
+                                                   let accuracyScore = phonemePronAssessment["AccuracyScore"] as? Double {
+                                                    phonemeDict["AccuracyScore"] = accuracyScore
+                                                }
+
+                                                if !phonemeDict.isEmpty {
+                                                    processedPhonemes.append(phonemeDict)
+                                                }
+                                            }
+
+                                            if !processedPhonemes.isEmpty {
+                                                wordDict["Phonemes"] = processedPhonemes
+                                            }
+                                        }
+
+                                        if !wordDict.isEmpty {
+                                            processedWords.append(wordDict)
+                                        }
+                                    }
+
+                                    if !processedWords.isEmpty {
+                                        jsonBuilder["Words"] = processedWords
+                                    }
+                                }
 
                                 // 항상 원본 JSON을 응답에 포함
                                 jsonBuilder["OriginalResponseText"] = originalJson
