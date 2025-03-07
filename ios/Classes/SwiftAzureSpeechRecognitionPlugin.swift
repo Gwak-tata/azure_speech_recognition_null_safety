@@ -281,7 +281,7 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                     // 새로운 PronunciationAssessmentResult 클래스를 사용한 평가 결과 처리
                     do {
                         // PronunciationAssessmentResult 클래스를 이용해 결과 가져오기
-                        let pronResult = try SPXPronunciationAssessmentResult.from(result)
+                        let pronResult = SPXPronunciationAssessmentResult(result)
 
                         // PronunciationAssessmentResult에서 직접 모든 점수 추출
                         let accuracyScore = pronResult.accuracyScore
@@ -306,21 +306,30 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                         if let topic = topic {
                             do {
                                 // ContentAssessmentResult 가져오기 시도
-                                if let contentResult = pronResult.contentAssessmentResult {
+                                if let contentJsonString = result.properties?.getPropertyBy(SPXPropertyId.speechServiceResponseJsonResult),
+                                   let contentJsonData = contentJsonString.data(using: .utf8),
+                                   let contentJson = try? JSONSerialization.jsonObject(with: contentJsonData) as? [String: Any],
+                                   let nBestArray = contentJson["NBest"] as? [[String: Any]],
+                                   let firstNBest = nBestArray.first,
+                                   let contentAssessment = firstNBest["ContentAssessment"] as? [String: Any] {
+
                                     // 문법 점수 가져오기
-                                    let grammarScore = contentResult.grammarScore
-                                    jsonBuilder["GrammarScore"] = grammarScore
-                                    scoreLogBuilder += ", Grammar: %.2f"
+                                    if let grammarScore = contentAssessment["GrammarScore"] as? Double {
+                                        jsonBuilder["GrammarScore"] = grammarScore
+                                        scoreLogBuilder += ", Grammar: %.2f"
+                                    }
 
                                     // 어휘 점수 가져오기
-                                    let vocabScore = contentResult.vocabularyScore
-                                    jsonBuilder["VocabularyScore"] = vocabScore
-                                    scoreLogBuilder += ", Vocabulary: %.2f"
+                                    if let vocabScore = contentAssessment["VocabularyScore"] as? Double {
+                                        jsonBuilder["VocabularyScore"] = vocabScore
+                                        scoreLogBuilder += ", Vocabulary: %.2f"
+                                    }
 
                                     // 주제 점수 가져오기
-                                    let topicScore = contentResult.topicScore
-                                    jsonBuilder["TopicScore"] = topicScore
-                                    scoreLogBuilder += ", Topic: %.2f"
+                                    if let topicScore = contentAssessment["TopicScore"] as? Double {
+                                        jsonBuilder["TopicScore"] = topicScore
+                                        scoreLogBuilder += ", Topic: %.2f"
+                                    }
                                 }
                             } catch {
                                 print("Error getting content assessment result: \(error)")
@@ -335,50 +344,67 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                                     completenessScore,
                                     pronunciationScore))
 
-                        // 단어 수준 평가 추가 (사용 가능한 경우)
-//                        if let words = pronResult.words, !words.isEmpty {
-//                            var wordsArray: [[String: Any]] = []
+                        // 단어 수준 평가 추가 (JSON에서 직접 추출)
+//                        if let originalJsonString = originalJson,
+//                           let jsonData = originalJsonString.data(using: .utf8),
+//                           let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+//                           let nBestArray = jsonObject["NBest"] as? [[String: Any]],
+//                           let firstNBest = nBestArray.first,
+//                           let wordsArray = firstNBest["Words"] as? [[String: Any]] {
 //
-//                            for word in words {
-//                                var wordDict: [String: Any] = [
-//                                    "Word": word.word,
-//                                    "AccuracyScore": word.accuracyScore
-//                                ]
+//                            var processedWords: [[String: Any]] = []
 //
-//                                // 오류 유형 기반 ErrorType 추가
-//                                let errorType: String
-//                                switch word.errorType {
-//                                case .none:
-//                                    errorType = "None"
-//                                case .omission:
-//                                    errorType = "Omission"
-//                                case .insertion:
-//                                    errorType = "Insertion"
-//                                case .mispronunciation:
-//                                    errorType = "Mispronunciation"
-//                                @unknown default:
-//                                    errorType = "Unknown"
+//                            for wordItem in wordsArray {
+//                                var wordDict: [String: Any] = [:]
+//
+//                                if let word = wordItem["Word"] as? String {
+//                                    wordDict["Word"] = word
 //                                }
-//                                wordDict["ErrorType"] = errorType
 //
-//                                // 음소 수준 평가 추가 (사용 가능하고 granularity가 Phoneme인 경우)
-//                                if granularity == .phoneme, let phonemes = word.phonemes, !phonemes.isEmpty {
-//                                    var phonemesArray: [[String: Any]] = []
-//
-//                                    for phoneme in phonemes {
-//                                        phonemesArray.append([
-//                                            "Phoneme": phoneme.phoneme,
-//                                            "AccuracyScore": phoneme.accuracyScore
-//                                        ])
+//                                if let pronAssessment = wordItem["PronunciationAssessment"] as? [String: Any] {
+//                                    if let accuracyScore = pronAssessment["AccuracyScore"] as? Double {
+//                                        wordDict["AccuracyScore"] = accuracyScore
 //                                    }
 //
-//                                    wordDict["Phonemes"] = phonemesArray
+//                                    if let errorType = pronAssessment["ErrorType"] as? String {
+//                                        wordDict["ErrorType"] = errorType
+//                                    }
 //                                }
 //
-//                                wordsArray.append(wordDict)
+//                                // 음소 레벨 정보 추가 (사용 가능한 경우)
+//                                if granularity == .phoneme, let phonemesArray = wordItem["Phonemes"] as? [[String: Any]] {
+//                                    var processedPhonemes: [[String: Any]] = []
+//
+//                                    for phonemeItem in phonemesArray {
+//                                        var phonemeDict: [String: Any] = [:]
+//
+//                                        if let phoneme = phonemeItem["Phoneme"] as? String {
+//                                            phonemeDict["Phoneme"] = phoneme
+//                                        }
+//
+//                                        if let phonemePronAssessment = phonemeItem["PronunciationAssessment"] as? [String: Any],
+//                                           let accuracyScore = phonemePronAssessment["AccuracyScore"] as? Double {
+//                                            phonemeDict["AccuracyScore"] = accuracyScore
+//                                        }
+//
+//                                        if !phonemeDict.isEmpty {
+//                                            processedPhonemes.append(phonemeDict)
+//                                        }
+//                                    }
+//
+//                                    if !processedPhonemes.isEmpty {
+//                                        wordDict["Phonemes"] = processedPhonemes
+//                                    }
+//                                }
+//
+//                                if !wordDict.isEmpty {
+//                                    processedWords.append(wordDict)
+//                                }
 //                            }
 //
-//                            jsonBuilder["Words"] = wordsArray
+//                            if !processedWords.isEmpty {
+//                                jsonBuilder["Words"] = processedWords
+//                            }
 //                        }
 
                         // 원본 JSON 변환하여 응답에 포함 (가능한 경우)
@@ -499,7 +525,7 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                         // 새로운 PronunciationAssessmentResult 클래스를 사용한 평가 결과 처리
                         do {
                             // PronunciationAssessmentResult 클래스를 이용해 결과 가져오기
-                            let pronResult = try SPXPronunciationAssessmentResult.from(result)
+                            let pronResult = SPXPronunciationAssessmentResult(result)
 
                             // 기본 점수 추출
                             var jsonBuilder: [String: Any] = [
