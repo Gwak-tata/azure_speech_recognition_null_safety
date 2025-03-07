@@ -371,7 +371,7 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
 
                                     // Extract NBest results if available
                                     val nBestArray = originalJsonObject.getJsonArray("NBest")
-                                    if (nBestArray != null && nBestArray.size() > 0) {
+                                    if (nBestArray != null && nBestArray.size > 0) {
                                         jsonObjectBuilder.add("NBest", nBestArray)
                                     }
                                 } catch (e: Exception) {
