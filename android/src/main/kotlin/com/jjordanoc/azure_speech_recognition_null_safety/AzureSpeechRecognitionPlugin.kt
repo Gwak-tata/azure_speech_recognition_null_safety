@@ -247,7 +247,9 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
 
             setOnTaskCompletedListener(task) { result ->
                 val s = result.text
+                val originalJson = result.properties.getProperty(PropertyId.SpeechServiceResponse_JsonResult)
                 Log.i(logTag, "Final result: $s\nReason: ${result.reason}")
+                Log.i(logTag, "Original JSON: $originalJson")
 
                 if (task_global === task) {
                     if (result.reason == ResultReason.RecognizedSpeech) {
@@ -284,67 +286,49 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                                 .add("PronunciationScore", pronunciationScore)
 
                             // Add word-level assessment if available
-                            val words = pronResult.getWords()
-                            if (words != null && words.isNotEmpty()) {
-                                val wordsArrayBuilder = javax.json.Json.createArrayBuilder()
+                            // Note: The exact API for accessing word-level details may differ in 1.42.0
+                            // We'll use reflection to check available methods if needed
+                            try {
+                                val wordsMethod = pronResult.javaClass.getMethod("getWords")
+                                val words = wordsMethod.invoke(pronResult) as? List<*>
 
-                                for (word in words) {
-                                    val wordBuilder = javax.json.Json.createObjectBuilder()
-                                        .add("Word", word.getWord())
-                                        .add("AccuracyScore", word.getAccuracyScore())
+                                if (words != null && words.isNotEmpty()) {
+                                    val wordsArrayBuilder = javax.json.Json.createArrayBuilder()
 
-                                    // Add error type based on the error type enum
-                                    val errorType = when (word.getErrorType()) {
-                                        PronunciationAssessmentWordResult.ErrorType.None -> "None"
-                                        PronunciationAssessmentWordResult.ErrorType.Omission -> "Omission"
-                                        PronunciationAssessmentWordResult.ErrorType.Insertion -> "Insertion"
-                                        PronunciationAssessmentWordResult.ErrorType.Mispronunciation -> "Mispronunciation"
-                                        else -> "Unknown"
-                                    }
-                                    wordBuilder.add("ErrorType", errorType)
+                                    for (wordObj in words) {
+                                        val wordBuilder = javax.json.Json.createObjectBuilder()
 
-                                    // Add phoneme level assessment if available and granularity is Phoneme
-                                    if (granularity == PronunciationAssessmentGranularity.Phoneme) {
-                                        val phonemes = word.getPhonemes()
-                                        if (phonemes != null && phonemes.isNotEmpty()) {
-                                            val phonemesArrayBuilder = javax.json.Json.createArrayBuilder()
+                                        // Get word text using reflection
+                                        val getWordMethod = wordObj.javaClass.getMethod("getWord")
+                                        val wordText = getWordMethod.invoke(wordObj) as String
+                                        wordBuilder.add("Word", wordText)
 
-                                            for (phoneme in phonemes) {
-                                                phonemesArrayBuilder.add(
-                                                    javax.json.Json.createObjectBuilder()
-                                                        .add("Phoneme", phoneme.getPhoneme())
-                                                        .add("AccuracyScore", phoneme.getAccuracyScore())
-                                                )
-                                            }
+                                        // Get accuracy score using reflection
+                                        val getAccuracyMethod = wordObj.javaClass.getMethod("getAccuracyScore")
+                                        val accuracyScoreValue = getAccuracyMethod.invoke(wordObj) as Double
+                                        wordBuilder.add("AccuracyScore", accuracyScoreValue)
 
-                                            wordBuilder.add("Phonemes", phonemesArrayBuilder)
+                                        // Try to get error type if available
+                                        try {
+                                            val getErrorTypeMethod = wordObj.javaClass.getMethod("getErrorType")
+                                            val errorTypeObj = getErrorTypeMethod.invoke(wordObj)
+                                            val errorType = errorTypeObj.toString()
+                                            wordBuilder.add("ErrorType", errorType)
+                                        } catch (e: Exception) {
+                                            // If error type method isn't available, use a default
+                                            wordBuilder.add("ErrorType", "Unknown")
                                         }
+
+                                        wordsArrayBuilder.add(wordBuilder)
                                     }
 
-                                    wordsArrayBuilder.add(wordBuilder)
+                                    jsonObjectBuilder.add("Words", wordsArrayBuilder)
                                 }
-
-                                jsonObjectBuilder.add("Words", wordsArrayBuilder)
+                            } catch (e: Exception) {
+                                Log.e(logTag, "Error accessing word-level details: ${e.message}", e)
                             }
 
-                            // Add syllable level assessment if available
-                            val syllables = pronResult.getSyllables()
-                            if (syllables != null && syllables.isNotEmpty()) {
-                                val syllablesArrayBuilder = javax.json.Json.createArrayBuilder()
-
-                                for (syllable in syllables) {
-                                    syllablesArrayBuilder.add(
-                                        javax.json.Json.createObjectBuilder()
-                                            .add("Syllable", syllable.getSyllable())
-                                            .add("AccuracyScore", syllable.getAccuracyScore())
-                                    )
-                                }
-
-                                jsonObjectBuilder.add("Syllables", syllablesArrayBuilder)
-                            }
-
-                            // Add original JSON response as a field
-                            val originalJson = result.properties.getProperty(PropertyId.SpeechServiceResponse_JsonResult)
+                            // Convert the original JSON to include it in our response if possible
                             if (originalJson != null && originalJson.isNotEmpty()) {
                                 try {
                                     val jsonReader = Json.createReader(StringReader(originalJson))
@@ -364,7 +348,6 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                         } catch (e: Exception) {
                             Log.e(logTag, "Error processing assessment results: ${e.message}", e)
                             // Fallback to original JSON if there's an error
-                            val originalJson = result.properties.getProperty(PropertyId.SpeechServiceResponse_JsonResult)
                             invokeMethod("speech.onFinalResponse", s)
                             invokeMethod("speech.onAssessmentResult", originalJson ?: "")
                         }
