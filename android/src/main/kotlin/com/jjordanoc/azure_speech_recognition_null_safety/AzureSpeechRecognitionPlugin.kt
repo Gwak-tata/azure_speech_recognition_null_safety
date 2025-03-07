@@ -247,7 +247,8 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
 
             setOnTaskCompletedListener(task) { result ->
                 val s = result.text
-                val originalJson = result.properties.getProperty(PropertyId.SpeechServiceResponse_JsonResult)
+                val originalJson =
+                    result.properties.getProperty(PropertyId.SpeechServiceResponse_JsonResult)
                 Log.i(logTag, "Final result: $s\nReason: ${result.reason}")
                 Log.i(logTag, "Original JSON: $originalJson")
 
@@ -264,20 +265,13 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                             val prosodyScore = pronResult.getProsodyScore()
                             val pronunciationScore = pronResult.getPronunciationScore()
 
-                            // Log the scores
-                            Log.i(
-                                logTag, String.format(
-                                    "Scores - Accuracy: %.2f, Prosody: %.2f, Fluency: %.2f, " +
-                                            "Completeness: %.2f, Pronunciation: %.2f",
-                                    accuracyScore,
-                                    prosodyScore,
-                                    fluencyScore,
-                                    completenessScore,
-                                    pronunciationScore
-                                )
+                            // StringBuilder for log message
+                            val scoreLogBuilder = StringBuilder(
+                                "Scores - Accuracy: %.2f, Prosody: %.2f, Fluency: %.2f, " +
+                                        "Completeness: %.2f, Pronunciation: %.2f"
                             )
 
-                            // Create a JSON object with the scores and word-level assessment
+                            // Create a JSON object with the scores
                             val jsonObjectBuilder = javax.json.Json.createObjectBuilder()
                                 .add("AccuracyScore", accuracyScore)
                                 .add("ProsodyScore", prosodyScore)
@@ -285,122 +279,245 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                                 .add("CompletenessScore", completenessScore)
                                 .add("PronunciationScore", pronunciationScore)
 
-                            // Add word-level assessment if available
-                            // Note: The exact API for accessing word-level details may differ in 1.42.0
-                            // We'll use reflection to check available methods if needed
-                            try {
-                                val wordsMethod = pronResult.javaClass.getMethod("getWords")
-                                val words = wordsMethod.invoke(pronResult) as? List<*>
+                            // Get content assessment scores if topic was provided
+                            if (topic != null) {
+                                try {
+                                    // Try to get the content assessment result
+                                    val getContentMethod =
+                                        pronResult.javaClass.getMethod("getContentAssessmentResult")
+                                    if (getContentMethod != null) {
+                                        val contentResult = getContentMethod.invoke(pronResult)
 
-                                if (words != null && words.isNotEmpty()) {
-                                    val wordsArrayBuilder = javax.json.Json.createArrayBuilder()
+                                        if (contentResult != null) {
+                                            val contentClass = contentResult.javaClass
 
-                                    for (wordObj in words) {
-                                        if (wordObj != null) {
-                                            val wordBuilder = javax.json.Json.createObjectBuilder()
-
-                                            // Get word text using reflection
-                                            val getWordMethod = wordObj.javaClass.getMethod("getWord")
-                                            val wordText = getWordMethod.invoke(wordObj) as? String
-                                            wordBuilder.add("Word", wordText ?: "")
-
-                                            // Get accuracy score using reflection
-                                            val getAccuracyMethod = wordObj.javaClass.getMethod("getAccuracyScore")
-                                            val accuracyScoreValue = (getAccuracyMethod.invoke(wordObj) as? Double) ?: 0.0
-                                            wordBuilder.add("AccuracyScore", accuracyScoreValue)
-
-                                            // Try to get error type if available
+                                            // Get grammar score
                                             try {
-                                                val getErrorTypeMethod = wordObj.javaClass.getMethod("getErrorType")
-                                                val errorTypeObj = getErrorTypeMethod.invoke(wordObj)
-                                                val errorType = errorTypeObj?.toString() ?: "Unknown"
-                                                wordBuilder.add("ErrorType", errorType)
+                                                val getGrammarMethod =
+                                                    contentClass.getMethod("getGrammarScore")
+                                                val grammarScore =
+                                                    (getGrammarMethod.invoke(contentResult) as? Double)
+                                                        ?: 0.0
+                                                jsonObjectBuilder.add("GrammarScore", grammarScore)
+                                                scoreLogBuilder.append(", Grammar: %.2f")
                                             } catch (e: Exception) {
-                                                // If error type method isn't available, use a default
-                                                wordBuilder.add("ErrorType", "Unknown")
+                                                Log.e(
+                                                    logTag,
+                                                    "Error getting grammar score: ${e.message}",
+                                                    e
+                                                )
                                             }
 
-                                            wordsArrayBuilder.add(wordBuilder)
+                                            // Get vocabulary score
+                                            try {
+                                                val getVocabMethod =
+                                                    contentClass.getMethod("getVocabularyScore")
+                                                val vocabScore =
+                                                    (getVocabMethod.invoke(contentResult) as? Double)
+                                                        ?: 0.0
+                                                jsonObjectBuilder.add("VocabularyScore", vocabScore)
+                                                scoreLogBuilder.append(", Vocabulary: %.2f")
+                                            } catch (e: Exception) {
+                                                Log.e(
+                                                    logTag,
+                                                    "Error getting vocabulary score: ${e.message}",
+                                                    e
+                                                )
+                                            }
+
+                                            // Get topic score
+                                            try {
+                                                val getTopicMethod =
+                                                    contentClass.getMethod("getTopicScore")
+                                                val topicScore =
+                                                    (getTopicMethod.invoke(contentResult) as? Double)
+                                                        ?: 0.0
+                                                jsonObjectBuilder.add("TopicScore", topicScore)
+                                                scoreLogBuilder.append(", Topic: %.2f")
+                                            } catch (e: Exception) {
+                                                Log.e(
+                                                    logTag,
+                                                    "Error getting topic score: ${e.message}",
+                                                    e
+                                                )
+                                            }
                                         }
+                                    } catch (e: Exception) {
+                                        Log.e(
+                                            logTag,
+                                            "Error getting content assessment result: ${e.message}",
+                                            e
+                                        )
                                     }
-
-                                    jsonObjectBuilder.add("Words", wordsArrayBuilder)
                                 }
-                            } catch (e: Exception) {
-                                Log.e(logTag, "Error accessing word-level details: ${e.message}", e)
-                            }
 
-                            // Add phonemes if available in the result
-                            try {
-                                val phonemesMethod = pronResult.javaClass.getDeclaredMethod("getPhonemes")
-                                val phonemes = phonemesMethod.invoke(pronResult) as? List<*>
+                                // Log all the scores
+                                Log.i(
+                                    logTag, String.format(
+                                        scoreLogBuilder.toString(),
+                                        accuracyScore,
+                                        prosodyScore,
+                                        fluencyScore,
+                                        completenessScore,
+                                        pronunciationScore
+                                        // Content assessment scores would go here if they were included in the log message
+                                    )
+                                )
 
-                                if (phonemes != null && phonemes.isNotEmpty()) {
-                                    val phonemesArrayBuilder = javax.json.Json.createArrayBuilder()
-
-                                    for (phonemeObj in phonemes) {
-                                        if (phonemeObj != null) {
-                                            val phonemeBuilder = javax.json.Json.createObjectBuilder()
-
-                                            // Get phoneme text
-                                            val getPhonemeMethod = phonemeObj.javaClass.getMethod("getPhoneme")
-                                            val phonemeText = getPhonemeMethod.invoke(phonemeObj) as? String
-                                            phonemeBuilder.add("Phoneme", phonemeText ?: "")
-
-                                            // Get accuracy score
-                                            val getAccuracyMethod = phonemeObj.javaClass.getMethod("getAccuracyScore")
-                                            val accuracyScoreValue = (getAccuracyMethod.invoke(phonemeObj) as? Double) ?: 0.0
-                                            phonemeBuilder.add("AccuracyScore", accuracyScoreValue)
-
-                                            phonemesArrayBuilder.add(phonemeBuilder)
-                                        }
-                                    }
-
-                                    jsonObjectBuilder.add("Phonemes", phonemesArrayBuilder)
-                                }
-                            } catch (e: Exception) {
-                                Log.e(logTag, "Error accessing phoneme details: ${e.message}", e)
-                            }
-
-                            // Convert the original JSON to include it in our response if possible
-                            if (originalJson != null && originalJson.isNotEmpty()) {
+                                // Add word-level assessment if available
+                                // Note: The exact API for accessing word-level details may differ in 1.42.0
+                                // We'll use reflection to check available methods if needed
                                 try {
-                                    val jsonReader = Json.createReader(StringReader(originalJson))
-                                    val originalJsonObject = jsonReader.readObject()
-                                    jsonReader.close()
+                                    val wordsMethod = pronResult.javaClass.getMethod("getWords")
+                                    val words = wordsMethod.invoke(pronResult) as? List<*>
 
-                                    // Extract NBest results if available
-                                    val nBestArray = originalJsonObject.getJsonArray("NBest")
-                                    if (nBestArray != null && nBestArray.size > 0) {
-                                        jsonObjectBuilder.add("NBest", nBestArray)
+                                    if (words != null && words.isNotEmpty()) {
+                                        val wordsArrayBuilder = javax.json.Json.createArrayBuilder()
+
+                                        for (wordObj in words) {
+                                            if (wordObj != null) {
+                                                val wordBuilder =
+                                                    javax.json.Json.createObjectBuilder()
+
+                                                // Get word text using reflection
+                                                val getWordMethod =
+                                                    wordObj.javaClass.getMethod("getWord")
+                                                val wordText =
+                                                    getWordMethod.invoke(wordObj) as? String
+                                                wordBuilder.add("Word", wordText ?: "")
+
+                                                // Get accuracy score using reflection
+                                                val getAccuracyMethod =
+                                                    wordObj.javaClass.getMethod("getAccuracyScore")
+                                                val accuracyScoreValue =
+                                                    (getAccuracyMethod.invoke(wordObj) as? Double)
+                                                        ?: 0.0
+                                                wordBuilder.add("AccuracyScore", accuracyScoreValue)
+
+                                                // Try to get error type if available
+                                                try {
+                                                    val getErrorTypeMethod =
+                                                        wordObj.javaClass.getMethod("getErrorType")
+                                                    val errorTypeObj =
+                                                        getErrorTypeMethod.invoke(wordObj)
+                                                    val errorType =
+                                                        errorTypeObj?.toString() ?: "Unknown"
+                                                    wordBuilder.add("ErrorType", errorType)
+                                                } catch (e: Exception) {
+                                                    // If error type method isn't available, use a default
+                                                    wordBuilder.add("ErrorType", "Unknown")
+                                                }
+
+                                                wordsArrayBuilder.add(wordBuilder)
+                                            }
+                                        }
+
+                                        jsonObjectBuilder.add("Words", wordsArrayBuilder)
                                     }
                                 } catch (e: Exception) {
-                                    Log.e(logTag, "Error parsing original JSON: ${e.message}", e)
-                                    jsonObjectBuilder.add("OriginalResponseText", originalJson)
+                                    Log.e(
+                                        logTag,
+                                        "Error accessing word-level details: ${e.message}",
+                                        e
+                                    )
                                 }
+
+                                // Add phonemes if available in the result
+                                try {
+                                    val phonemesMethod =
+                                        pronResult.javaClass.getDeclaredMethod("getPhonemes")
+                                    val phonemes = phonemesMethod.invoke(pronResult) as? List<*>
+
+                                    if (phonemes != null && phonemes.isNotEmpty()) {
+                                        val phonemesArrayBuilder =
+                                            javax.json.Json.createArrayBuilder()
+
+                                        for (phonemeObj in phonemes) {
+                                            if (phonemeObj != null) {
+                                                val phonemeBuilder =
+                                                    javax.json.Json.createObjectBuilder()
+
+                                                // Get phoneme text
+                                                val getPhonemeMethod =
+                                                    phonemeObj.javaClass.getMethod("getPhoneme")
+                                                val phonemeText =
+                                                    getPhonemeMethod.invoke(phonemeObj) as? String
+                                                phonemeBuilder.add("Phoneme", phonemeText ?: "")
+
+                                                // Get accuracy score
+                                                val getAccuracyMethod =
+                                                    phonemeObj.javaClass.getMethod("getAccuracyScore")
+                                                val accuracyScoreValue =
+                                                    (getAccuracyMethod.invoke(phonemeObj) as? Double)
+                                                        ?: 0.0
+                                                phonemeBuilder.add(
+                                                    "AccuracyScore",
+                                                    accuracyScoreValue
+                                                )
+
+                                                phonemesArrayBuilder.add(phonemeBuilder)
+                                            }
+                                        }
+
+                                        jsonObjectBuilder.add("Phonemes", phonemesArrayBuilder)
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(
+                                        logTag,
+                                        "Error accessing phoneme details: ${e.message}",
+                                        e
+                                    )
+                                }
+
+                                // Convert the original JSON to include it in our response if possible
+                                if (originalJson != null && originalJson.isNotEmpty()) {
+                                    try {
+                                        val jsonReader =
+                                            Json.createReader(StringReader(originalJson))
+                                        val originalJsonObject = jsonReader.readObject()
+                                        jsonReader.close()
+
+                                        // Extract NBest results if available
+                                        val nBestArray = originalJsonObject.getJsonArray("NBest")
+                                        if (nBestArray != null && nBestArray.size > 0) {
+                                            jsonObjectBuilder.add("NBest", nBestArray)
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(
+                                            logTag,
+                                            "Error parsing original JSON: ${e.message}",
+                                            e
+                                        )
+                                        jsonObjectBuilder.add("OriginalResponseText", originalJson)
+                                    }
+                                }
+
+                                val assessmentJson = jsonObjectBuilder.build().toString()
+
+                                invokeMethod("speech.onFinalResponse", s)
+                                invokeMethod("speech.onAssessmentResult", assessmentJson)
+                            } catch (e: Exception) {
+                                Log.e(
+                                    logTag,
+                                    "Error processing assessment results: ${e.message}",
+                                    e
+                                )
+                                // Fallback to original JSON if there's an error
+                                invokeMethod("speech.onFinalResponse", s)
+                                invokeMethod("speech.onAssessmentResult", originalJson ?: "")
                             }
-
-                            val assessmentJson = jsonObjectBuilder.build().toString()
-
-                            invokeMethod("speech.onFinalResponse", s)
-                            invokeMethod("speech.onAssessmentResult", assessmentJson)
-                        } catch (e: Exception) {
-                            Log.e(logTag, "Error processing assessment results: ${e.message}", e)
-                            // Fallback to original JSON if there's an error
-                            invokeMethod("speech.onFinalResponse", s)
-                            invokeMethod("speech.onAssessmentResult", originalJson ?: "")
+                        } else {
+                            invokeMethod("speech.onFinalResponse", "")
+                            invokeMethod("speech.onAssessmentResult", "")
                         }
-                    } else {
-                        invokeMethod("speech.onFinalResponse", "")
-                        invokeMethod("speech.onAssessmentResult", "")
                     }
+                    reco.close()
                 }
-                reco.close()
-            }
 
-        } catch (exec: Exception) {
-            Log.e(logTag, "ERROR: ${exec.message}", exec)
-            invokeMethod("speech.onException", "Exception: " + exec.message)
+            } catch (exec: Exception) {
+                Log.e(logTag, "ERROR: ${exec.message}", exec)
+                invokeMethod("speech.onException", "Exception: " + exec.message)
+            }
         }
     }
 
