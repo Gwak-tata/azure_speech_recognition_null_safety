@@ -296,30 +296,32 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                                     val wordsArrayBuilder = javax.json.Json.createArrayBuilder()
 
                                     for (wordObj in words) {
-                                        val wordBuilder = javax.json.Json.createObjectBuilder()
+                                        if (wordObj != null) {
+                                            val wordBuilder = javax.json.Json.createObjectBuilder()
 
-                                        // Get word text using reflection
-                                        val getWordMethod = wordObj.javaClass.getMethod("getWord")
-                                        val wordText = getWordMethod.invoke(wordObj) as String
-                                        wordBuilder.add("Word", wordText)
+                                            // Get word text using reflection
+                                            val getWordMethod = wordObj.javaClass.getMethod("getWord")
+                                            val wordText = getWordMethod.invoke(wordObj) as? String
+                                            wordBuilder.add("Word", wordText ?: "")
 
-                                        // Get accuracy score using reflection
-                                        val getAccuracyMethod = wordObj.javaClass.getMethod("getAccuracyScore")
-                                        val accuracyScoreValue = getAccuracyMethod.invoke(wordObj) as Double
-                                        wordBuilder.add("AccuracyScore", accuracyScoreValue)
+                                            // Get accuracy score using reflection
+                                            val getAccuracyMethod = wordObj.javaClass.getMethod("getAccuracyScore")
+                                            val accuracyScoreValue = (getAccuracyMethod.invoke(wordObj) as? Double) ?: 0.0
+                                            wordBuilder.add("AccuracyScore", accuracyScoreValue)
 
-                                        // Try to get error type if available
-                                        try {
-                                            val getErrorTypeMethod = wordObj.javaClass.getMethod("getErrorType")
-                                            val errorTypeObj = getErrorTypeMethod.invoke(wordObj)
-                                            val errorType = errorTypeObj.toString()
-                                            wordBuilder.add("ErrorType", errorType)
-                                        } catch (e: Exception) {
-                                            // If error type method isn't available, use a default
-                                            wordBuilder.add("ErrorType", "Unknown")
+                                            // Try to get error type if available
+                                            try {
+                                                val getErrorTypeMethod = wordObj.javaClass.getMethod("getErrorType")
+                                                val errorTypeObj = getErrorTypeMethod.invoke(wordObj)
+                                                val errorType = errorTypeObj?.toString() ?: "Unknown"
+                                                wordBuilder.add("ErrorType", errorType)
+                                            } catch (e: Exception) {
+                                                // If error type method isn't available, use a default
+                                                wordBuilder.add("ErrorType", "Unknown")
+                                            }
+
+                                            wordsArrayBuilder.add(wordBuilder)
                                         }
-
-                                        wordsArrayBuilder.add(wordBuilder)
                                     }
 
                                     jsonObjectBuilder.add("Words", wordsArrayBuilder)
@@ -328,13 +330,50 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                                 Log.e(logTag, "Error accessing word-level details: ${e.message}", e)
                             }
 
+                            // Add phonemes if available in the result
+                            try {
+                                val phonemesMethod = pronResult.javaClass.getDeclaredMethod("getPhonemes")
+                                val phonemes = phonemesMethod.invoke(pronResult) as? List<*>
+
+                                if (phonemes != null && phonemes.isNotEmpty()) {
+                                    val phonemesArrayBuilder = javax.json.Json.createArrayBuilder()
+
+                                    for (phonemeObj in phonemes) {
+                                        if (phonemeObj != null) {
+                                            val phonemeBuilder = javax.json.Json.createObjectBuilder()
+
+                                            // Get phoneme text
+                                            val getPhonemeMethod = phonemeObj.javaClass.getMethod("getPhoneme")
+                                            val phonemeText = getPhonemeMethod.invoke(phonemeObj) as? String
+                                            phonemeBuilder.add("Phoneme", phonemeText ?: "")
+
+                                            // Get accuracy score
+                                            val getAccuracyMethod = phonemeObj.javaClass.getMethod("getAccuracyScore")
+                                            val accuracyScoreValue = (getAccuracyMethod.invoke(phonemeObj) as? Double) ?: 0.0
+                                            phonemeBuilder.add("AccuracyScore", accuracyScoreValue)
+
+                                            phonemesArrayBuilder.add(phonemeBuilder)
+                                        }
+                                    }
+
+                                    jsonObjectBuilder.add("Phonemes", phonemesArrayBuilder)
+                                }
+                            } catch (e: Exception) {
+                                Log.e(logTag, "Error accessing phoneme details: ${e.message}", e)
+                            }
+
                             // Convert the original JSON to include it in our response if possible
                             if (originalJson != null && originalJson.isNotEmpty()) {
                                 try {
                                     val jsonReader = Json.createReader(StringReader(originalJson))
                                     val originalJsonObject = jsonReader.readObject()
                                     jsonReader.close()
-                                    jsonObjectBuilder.add("OriginalResponse", originalJsonObject)
+
+                                    // Extract NBest results if available
+                                    val nBestArray = originalJsonObject.getJsonArray("NBest")
+                                    if (nBestArray != null && nBestArray.size() > 0) {
+                                        jsonObjectBuilder.add("NBest", nBestArray)
+                                    }
                                 } catch (e: Exception) {
                                     Log.e(logTag, "Error parsing original JSON: ${e.message}", e)
                                     jsonObjectBuilder.add("OriginalResponseText", originalJson)
