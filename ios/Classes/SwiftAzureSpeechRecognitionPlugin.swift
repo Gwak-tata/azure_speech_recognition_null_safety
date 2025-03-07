@@ -544,27 +544,62 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                     if result.reason == SPXResultReason.recognizedSpeech {
                         // 새로운 PronunciationAssessmentResult 클래스를 사용한 평가 결과 처리
                         do {
-                            // PronunciationAssessmentResult 클래스를 이용해 결과 가져오기
-                            let pronResult = SPXPronunciationAssessmentResult(result)
+                            if let pronResult = SPXPronunciationAssessmentResult(result) {
+                                // 기본 점수 추출
+                                var jsonBuilder: [String: Any] = [
+                                    "AccuracyScore": pronResult.accuracyScore,
+                                    "ProsodyScore": pronResult.prosodyScore,
+                                    "FluencyScore": pronResult.fluencyScore,
+                                    "CompletenessScore": pronResult.completenessScore,
+                                    "PronunciationScore": pronResult.pronunciationScore
+                                ]
 
-                            // 기본 점수 추출
-                            var jsonBuilder: [String: Any] = [
-                                "AccuracyScore": pronResult.accuracyScore,
-                                "ProsodyScore": pronResult.prosodyScore,
-                                "FluencyScore": pronResult.fluencyScore,
-                                "CompletenessScore": pronResult.completenessScore,
-                                "PronunciationScore": pronResult.pronunciationScore
-                            ]
+                                // 항상 원본 JSON 포함
+                                jsonBuilder["OriginalResponseText"] = originalJson
 
-                            // 항상 원본 JSON 포함
-                            jsonBuilder["OriginalResponseText"] = originalJson
+                                // JSON을 문자열로 변환
+                                let jsonData = try JSONSerialization.data(withJSONObject: jsonBuilder)
+                                let assessmentJson = String(data: jsonData, encoding: .utf8) ?? originalJson ?? ""
 
-                            // JSON을 문자열로 변환
-                            let jsonData = try JSONSerialization.data(withJSONObject: jsonBuilder)
-                            let assessmentJson = String(data: jsonData, encoding: .utf8) ?? originalJson ?? ""
+                                self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
+                                self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: assessmentJson)
+                            } else {
+                                // pronResult가 nil인 경우 직접 JSON 파싱으로 대체
+                                var jsonBuilder: [String: Any] = [:]
+                                if let originalJsonString = originalJson,
+                                   let jsonData = originalJsonString.data(using: .utf8),
+                                   let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                                   let nBestArray = jsonObject["NBest"] as? [[String: Any]],
+                                   let firstNBest = nBestArray.first,
+                                   let pronAssessment = firstNBest["PronunciationAssessment"] as? [String: Any] {
 
-                            self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
-                            self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: assessmentJson)
+                                    if let accuracyScore = pronAssessment["AccuracyScore"] as? Double {
+                                        jsonBuilder["AccuracyScore"] = accuracyScore
+                                    }
+                                    if let fluencyScore = pronAssessment["FluencyScore"] as? Double {
+                                        jsonBuilder["FluencyScore"] = fluencyScore
+                                    }
+                                    if let completenessScore = pronAssessment["CompletenessScore"] as? Double {
+                                        jsonBuilder["CompletenessScore"] = completenessScore
+                                    }
+                                    if let prosodyScore = pronAssessment["ProsodyScore"] as? Double {
+                                        jsonBuilder["ProsodyScore"] = prosodyScore
+                                    }
+                                    if let pronScore = pronAssessment["PronScore"] as? Double {
+                                        jsonBuilder["PronunciationScore"] = pronScore
+                                    }
+                                }
+
+                                // 항상 원본 JSON을 응답에 포함
+                                jsonBuilder["OriginalResponseText"] = originalJson
+
+                                // 최종 JSON을 문자열로 변환
+                                let jsonData = try JSONSerialization.data(withJSONObject: jsonBuilder)
+                                let fallbackJsonString = String(data: jsonData, encoding: .utf8) ?? ""
+
+                                self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
+                                self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: fallbackJsonString)
+                            }
                         } catch {
                             print("Error processing assessment results: \(error)")
 
