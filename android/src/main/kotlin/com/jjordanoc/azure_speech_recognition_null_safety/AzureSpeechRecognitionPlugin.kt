@@ -214,7 +214,7 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                     referenceText,
                     PronunciationAssessmentGradingSystem.HundredMark,
                     granularity,
-                    enableMiscue ?: false
+                    enableMiscue
                 )
             pronunciationAssessmentConfig.enableProsodyAssessment()
             pronunciationAssessmentConfig.setPhonemeAlphabet(phonemeAlphabet)
@@ -228,14 +228,6 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
             }
 
             Log.i(logTag, pronunciationAssessmentConfig.toJson())
-
-            // Lists to store assessment data
-            val recognizedWords = mutableListOf<String>()
-            val pronWords = mutableListOf<Word>()
-            val finalWords = mutableListOf<Word>()
-            val fluencyScores = mutableListOf<Double>()
-            val prosodyScores = mutableListOf<Double>()
-            val durations = mutableListOf<Long>()
 
             val reco: SpeechRecognizer = SpeechRecognizer(config, audioInput)
             pronunciationAssessmentConfig.applyTo(reco)
@@ -255,207 +247,126 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
 
             setOnTaskCompletedListener(task) { result ->
                 val s = result.text
-                val pronunciationAssessmentResultJson =
-                    result.properties.getProperty(PropertyId.SpeechServiceResponse_JsonResult)
                 Log.i(logTag, "Final result: $s\nReason: ${result.reason}")
-                Log.i(
-                    logTag,
-                    "pronunciationAssessmentResultJson: $pronunciationAssessmentResultJson"
-                )
 
                 if (task_global === task) {
                     if (result.reason == ResultReason.RecognizedSpeech) {
                         try {
-                            // Extract scores from the pronunciation assessment result
+                            // Use the new PronunciationAssessmentResult class to get assessment results
                             val pronResult = PronunciationAssessmentResult.fromResult(result)
 
-                            // Store initial scores
-                            fluencyScores.add(pronResult.getFluencyScore())
-                            prosodyScores.add(pronResult.getProsodyScore())
+                            // Extract all scores directly from the PronunciationAssessmentResult
+                            val accuracyScore = pronResult.getAccuracyScore()
+                            val fluencyScore = pronResult.getFluencyScore()
+                            val completenessScore = pronResult.getCompletenessScore()
+                            val prosodyScore = pronResult.getProsodyScore()
+                            val pronunciationScore = pronResult.getPronunciationScore()
 
-                            // Parse the JSON response to extract word-level details
-                            val jsonReader =
-                                Json.createReader(StringReader(pronunciationAssessmentResultJson))
-                            val jsonObject = jsonReader.readObject()
-                            jsonReader.close()
-
-                            // Process NBest results to get word-level assessments
-                            val nBestArray = jsonObject.getJsonArray("NBest")
-                            for (i in 0 until nBestArray.size) {
-                                val nBestItem = nBestArray.getJsonObject(i)
-
-                                val wordsArray = nBestItem.getJsonArray("Words")
-                                var durationSum: Long = 0
-
-                                for (j in 0 until wordsArray.size) {
-                                    val wordItem = wordsArray.getJsonObject(j)
-                                    recognizedWords.add(wordItem.getString("Word"))
-                                    durationSum += wordItem.getJsonNumber("Duration").longValue()
-
-                                    val pronAssessment =
-                                        wordItem.getJsonObject("PronunciationAssessment")
-                                    pronWords.add(
-                                        Word(
-                                            wordItem.getString("Word"),
-                                            pronAssessment.getString("ErrorType"),
-                                            pronAssessment.getJsonNumber("AccuracyScore")
-                                                .doubleValue()
-                                        )
-                                    )
-                                }
-                                durations.add(durationSum)
-                            }
-
-                            // Process miscue detection if enabled
-                            // Split reference text into words and clean up punctuation
-                            val referenceWords =
-                                referenceText.toLowerCase().split(" ").map { word ->
-                                    word.replace(Regex("^\\p{Punct}+|\\p{Punct}+$"), "")
-                                }.toTypedArray()
-
-                            if (enableMiscue == true) {
-                                // Use java-diff-utils library (needs to be added to dependencies)
-                                try {
-                                    val diff = DiffUtils.diff(
-                                        referenceWords.toList(),
-                                        recognizedWords,
-                                        true
-                                    )
-
-                                    var currentIdx = 0
-                                    for (d in diff.deltas) {
-                                        when (d.type) {
-                                            DeltaType.EQUAL -> {
-                                                for (i in currentIdx until currentIdx + d.source.size()) {
-                                                    finalWords.add(pronWords[i])
-                                                }
-                                                currentIdx += d.target.size()
-                                            }
-
-                                            DeltaType.DELETE, DeltaType.CHANGE -> {
-                                                for (w in d.source.lines) {
-                                                    finalWords.add(Word(w, "Omission"))
-                                                }
-                                            }
-
-                                            DeltaType.INSERT, DeltaType.CHANGE -> {
-                                                for (i in currentIdx until currentIdx + d.target.size()) {
-                                                    val w = pronWords[i]
-                                                    w.errorType = "Insertion"
-                                                    finalWords.add(w)
-                                                }
-                                                currentIdx += d.target.size()
-                                            }
-                                        }
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e(logTag, "Error in diff processing: ${e.message}")
-                                    // Fallback in case diff utils fail
-                                    finalWords.addAll(pronWords)
-                                }
-                            } else {
-                                finalWords.addAll(pronWords)
-                            }
-
-                            // Calculate overall scores
-                            // 1. Calculate accuracy score
-                            var totalAccuracyScore = 0.0
-                            var accuracyCount = 0
-                            var validCount = 0
-
-                            for (word in finalWords) {
-                                if (word.errorType != "Insertion") {
-                                    totalAccuracyScore += word.accuracyScore
-                                    accuracyCount++
-                                }
-
-                                if (word.errorType == "None") {
-                                    validCount++
-                                }
-                            }
-
-                            val accuracyScore =
-                                if (accuracyCount > 0) totalAccuracyScore / accuracyCount else 0.0
-
-                            // 2. Re-calculate fluency score
-                            var fluencyScoreSum = 0.0
-                            var durationSum: Long = 0
-
-                            for (i in fluencyScores.indices) {
-                                fluencyScoreSum += fluencyScores[i] * durations[i]
-                                durationSum += durations[i]
-                            }
-
-                            val fluencyScore =
-                                if (durationSum > 0) fluencyScoreSum / durationSum else pronResult.getFluencyScore()
-
-                            // 3. Re-calculate prosody score
-                            val prosodyScore = if (prosodyScores.isNotEmpty())
-                                prosodyScores.sum() / prosodyScores.size
-                            else
-                                pronResult.getProsodyScore()
-
-                            // 4. Calculate completeness score
-                            val completenessScore = if (referenceWords.isNotEmpty())
-                                (validCount.toDouble() / referenceWords.size * 100).coerceAtMost(
-                                    100.0
-                                )
-                            else
-                                pronResult.getCompletenessScore()
-
-                            // 5. Calculate pronunciation score
-                            val pronScore =
-                                accuracyScore * 0.4 + prosodyScore * 0.2 + fluencyScore * 0.2 + completenessScore * 0.2
-
-                            // Log the final scores
+                            // Log the scores
                             Log.i(
                                 logTag, String.format(
-                                    "Final scores - Accuracy: %.2f, Prosody: %.2f, Fluency: %.2f, " +
+                                    "Scores - Accuracy: %.2f, Prosody: %.2f, Fluency: %.2f, " +
                                             "Completeness: %.2f, Pronunciation: %.2f",
                                     accuracyScore,
                                     prosodyScore,
                                     fluencyScore,
                                     completenessScore,
-                                    pronScore
+                                    pronunciationScore
                                 )
                             )
 
-                            // Create modified JSON with all scores
-                            val modifiedJsonObjectBuilder =
-                                javax.json.Json.createObjectBuilder(jsonObject)
-                                    .add("AccuracyScore", accuracyScore)
-                                    .add("ProsodyScore", prosodyScore)
-                                    .add("FluencyScore", fluencyScore)
-                                    .add("CompletenessScore", completenessScore)
-                                    .add("PronunciationScore", pronScore)
+                            // Create a JSON object with the scores and word-level assessment
+                            val jsonObjectBuilder = javax.json.Json.createObjectBuilder()
+                                .add("AccuracyScore", accuracyScore)
+                                .add("ProsodyScore", prosodyScore)
+                                .add("FluencyScore", fluencyScore)
+                                .add("CompletenessScore", completenessScore)
+                                .add("PronunciationScore", pronunciationScore)
 
                             // Add word-level assessment if available
-                            if (finalWords.isNotEmpty()) {
+                            val words = pronResult.getWords()
+                            if (words != null && words.isNotEmpty()) {
                                 val wordsArrayBuilder = javax.json.Json.createArrayBuilder()
 
-                                for (word in finalWords) {
-                                    wordsArrayBuilder.add(
+                                for (word in words) {
+                                    val wordBuilder = javax.json.Json.createObjectBuilder()
+                                        .add("Word", word.getWord())
+                                        .add("AccuracyScore", word.getAccuracyScore())
+
+                                    // Add error type based on the error type enum
+                                    val errorType = when (word.getErrorType()) {
+                                        PronunciationAssessmentWordResult.ErrorType.None -> "None"
+                                        PronunciationAssessmentWordResult.ErrorType.Omission -> "Omission"
+                                        PronunciationAssessmentWordResult.ErrorType.Insertion -> "Insertion"
+                                        PronunciationAssessmentWordResult.ErrorType.Mispronunciation -> "Mispronunciation"
+                                        else -> "Unknown"
+                                    }
+                                    wordBuilder.add("ErrorType", errorType)
+
+                                    // Add phoneme level assessment if available and granularity is Phoneme
+                                    if (granularity == PronunciationAssessmentGranularity.Phoneme) {
+                                        val phonemes = word.getPhonemes()
+                                        if (phonemes != null && phonemes.isNotEmpty()) {
+                                            val phonemesArrayBuilder = javax.json.Json.createArrayBuilder()
+
+                                            for (phoneme in phonemes) {
+                                                phonemesArrayBuilder.add(
+                                                    javax.json.Json.createObjectBuilder()
+                                                        .add("Phoneme", phoneme.getPhoneme())
+                                                        .add("AccuracyScore", phoneme.getAccuracyScore())
+                                                )
+                                            }
+
+                                            wordBuilder.add("Phonemes", phonemesArrayBuilder)
+                                        }
+                                    }
+
+                                    wordsArrayBuilder.add(wordBuilder)
+                                }
+
+                                jsonObjectBuilder.add("Words", wordsArrayBuilder)
+                            }
+
+                            // Add syllable level assessment if available
+                            val syllables = pronResult.getSyllables()
+                            if (syllables != null && syllables.isNotEmpty()) {
+                                val syllablesArrayBuilder = javax.json.Json.createArrayBuilder()
+
+                                for (syllable in syllables) {
+                                    syllablesArrayBuilder.add(
                                         javax.json.Json.createObjectBuilder()
-                                            .add("Word", word.word)
-                                            .add("ErrorType", word.errorType)
-                                            .add("AccuracyScore", word.accuracyScore)
+                                            .add("Syllable", syllable.getSyllable())
+                                            .add("AccuracyScore", syllable.getAccuracyScore())
                                     )
                                 }
 
-                                modifiedJsonObjectBuilder.add("Words", wordsArrayBuilder)
+                                jsonObjectBuilder.add("Syllables", syllablesArrayBuilder)
                             }
 
-                            val modifiedJsonString = modifiedJsonObjectBuilder.build().toString()
+                            // Add original JSON response as a field
+                            val originalJson = result.properties.getProperty(PropertyId.SpeechServiceResponse_JsonResult)
+                            if (originalJson != null && originalJson.isNotEmpty()) {
+                                try {
+                                    val jsonReader = Json.createReader(StringReader(originalJson))
+                                    val originalJsonObject = jsonReader.readObject()
+                                    jsonReader.close()
+                                    jsonObjectBuilder.add("OriginalResponse", originalJsonObject)
+                                } catch (e: Exception) {
+                                    Log.e(logTag, "Error parsing original JSON: ${e.message}", e)
+                                    jsonObjectBuilder.add("OriginalResponseText", originalJson)
+                                }
+                            }
+
+                            val assessmentJson = jsonObjectBuilder.build().toString()
 
                             invokeMethod("speech.onFinalResponse", s)
-                            invokeMethod("speech.onAssessmentResult", modifiedJsonString)
+                            invokeMethod("speech.onAssessmentResult", assessmentJson)
                         } catch (e: Exception) {
                             Log.e(logTag, "Error processing assessment results: ${e.message}", e)
+                            // Fallback to original JSON if there's an error
+                            val originalJson = result.properties.getProperty(PropertyId.SpeechServiceResponse_JsonResult)
                             invokeMethod("speech.onFinalResponse", s)
-                            invokeMethod(
-                                "speech.onAssessmentResult",
-                                pronunciationAssessmentResultJson
-                            )
+                            invokeMethod("speech.onAssessmentResult", originalJson ?: "")
                         }
                     } else {
                         invokeMethod("speech.onFinalResponse", "")
