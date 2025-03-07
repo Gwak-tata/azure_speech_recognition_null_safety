@@ -439,22 +439,23 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
 //                            }
 
                             // Convert the original JSON to include it in our response if possible
-                            if (originalJson != null && originalJson.isNotEmpty()) {
-                                try {
-                                    val jsonReader = Json.createReader(StringReader(originalJson))
-                                    val originalJsonObject = jsonReader.readObject()
-                                    jsonReader.close()
-
-                                    // Extract NBest results if available
+//                            if (originalJson != null && originalJson.isNotEmpty()) {
+//                                try {
+//                                    val jsonReader = Json.createReader(StringReader(originalJson))
+//                                    val originalJsonObject = jsonReader.readObject()
+//                                    jsonReader.close()
+//
+//                                    // Extract NBest results if available
 //                                    val nBestArray = originalJsonObject.getJsonArray("NBest")
 //                                    if (nBestArray != null && nBestArray.size > 0) {
 //                                        jsonObjectBuilder.add("NBest", nBestArray)
 //                                    }
-                                } catch (e: Exception) {
-                                    Log.e(logTag, "Error parsing original JSON: ${e.message}", e)
-                                    jsonObjectBuilder.add("OriginalResponseText", originalJson)
-                                }
-                            }
+//                                } catch (e: Exception) {
+//                                    Log.e(logTag, "Error parsing original JSON: ${e.message}", e)
+//                                    jsonObjectBuilder.add("OriginalResponseText", originalJson)
+//                                }
+//                            }
+                            jsonObjectBuilder.add("OriginalResponseText", originalJson)
 
                             val assessmentJson = jsonObjectBuilder.build().toString()
 
