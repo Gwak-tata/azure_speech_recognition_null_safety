@@ -446,10 +446,10 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                                     jsonReader.close()
 
                                     // Extract NBest results if available
-                                    val nBestArray = originalJsonObject.getJsonArray("NBest")
-                                    if (nBestArray != null && nBestArray.size > 0) {
-                                        jsonObjectBuilder.add("NBest", nBestArray)
-                                    }
+//                                    val nBestArray = originalJsonObject.getJsonArray("NBest")
+//                                    if (nBestArray != null && nBestArray.size > 0) {
+//                                        jsonObjectBuilder.add("NBest", nBestArray)
+//                                    }
                                 } catch (e: Exception) {
                                     Log.e(logTag, "Error parsing original JSON: ${e.message}", e)
                                     jsonObjectBuilder.add("OriginalResponseText", originalJson)
@@ -463,8 +463,10 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                         } catch (e: Exception) {
                             Log.e(logTag, "Error processing assessment results: ${e.message}", e)
                             // Fallback to original JSON if there's an error
+                            val fallbackJsonBuilder = javax.json.Json.createObjectBuilder()
+                            fallbackJsonBuilder.add("OriginalResponseText", originalJson ?: "")
                             invokeMethod("speech.onFinalResponse", s)
-                            invokeMethod("speech.onAssessmentResult", originalJson ?: "")
+                            invokeMethod("speech.onAssessmentResult", fallbackJsonBuilder.build().toString())
                         }
                     } else {
                         invokeMethod("speech.onFinalResponse", "")
