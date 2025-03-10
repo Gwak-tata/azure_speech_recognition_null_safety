@@ -59,17 +59,26 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
         }
         else if (call.method == "simpleVoiceWithAssessment") {
             print("Called simpleVoiceWithAssessment")
-            simpleSpeechRecognitionWithAssessment(
-                referenceText: referenceText,
-                phonemeAlphabet: phonemeAlphabet,
-                granularity: granularity,
-                enableMiscue: enableMiscue,
-                speechSubscriptionKey: speechSubscriptionKey,
-                serviceRegion: serviceRegion,
-                lang: lang,
-                timeoutMs: timeoutMs,
-                nBestPhonemeCount: nBestPhonemeCount,
-                topic: topic)
+            // 마이크 권한 확인 후 실행
+            checkMicrophonePermission { granted in
+                if granted {
+                    self.simpleSpeechRecognitionWithAssessment(
+                        referenceText: referenceText,
+                        phonemeAlphabet: phonemeAlphabet,
+                        granularity: granularity,
+                        enableMiscue: enableMiscue,
+                        speechSubscriptionKey: speechSubscriptionKey,
+                        serviceRegion: serviceRegion,
+                        lang: lang,
+                        timeoutMs: timeoutMs,
+                        nBestPhonemeCount: nBestPhonemeCount,
+                        topic: topic)
+                } else {
+                    DispatchQueue.main.async {
+                        self.invokeMethod("speech.onException", arguments: "마이크 접근 권한이 없습니다.")
+                    }
+                }
+            }
             result(true)
         }
         else if (call.method == "isContinuousRecognitionOn") {
@@ -102,6 +111,46 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
         }
     }
 
+    // Flutter 채널 호출을 메인 스레드에서 실행하도록 하는 함수
+    private func invokeMethod(_ method: String, arguments: Any?) {
+        DispatchQueue.main.async {
+            self.azureChannel.invokeMethod(method, arguments: arguments)
+        }
+    }
+
+    // 마이크 권한 확인 함수
+    private func checkMicrophonePermission(completion: @escaping (Bool) -> Void) {
+        switch AVAudioSession.sharedInstance().recordPermission {
+        case .granted:
+            completion(true)
+        case .denied:
+            print("마이크 권한이 거부되었습니다.")
+            completion(false)
+        case .undetermined:
+            AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                completion(granted)
+            }
+        @unknown default:
+            completion(false)
+        }
+    }
+
+    // 오디오 세션 설정 함수
+    private func setupAudioSession() -> Bool {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playAndRecord,
+                                         mode: .spokenAudio,
+                                         options: [.allowBluetooth, .defaultToSpeaker])
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            print("오디오 세션 설정 완료")
+            return true
+        } catch {
+            print("오디오 세션 설정 오류: \(error)")
+            return false
+        }
+    }
+
     private func cancelActiveSimpleRecognitionTasks() {
         print("Cancelling any active tasks")
         for taskId in simpleRecognitionTasks.keys {
@@ -118,23 +167,40 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
         let task = Task {
             print("Started recognition with task ID \(taskId)")
             var speechConfig: SPXSpeechConfiguration?
+
+            // 오디오 세션 설정
+            if !setupAudioSession() {
+                self.invokeMethod("speech.onException", arguments: "오디오 세션 설정에 실패했습니다.")
+                return
+            }
+
             do {
-                let audioSession = AVAudioSession.sharedInstance()
-                // Request access to the microphone
-                try audioSession.setCategory(AVAudioSession.Category.record, mode: AVAudioSession.Mode.default, options: AVAudioSession.CategoryOptions.allowBluetooth)
-                try audioSession.setActive(true)
-                print("Setting custom audio session")
                 // Initialize speech recognizer and specify correct subscription key and service region
                 try speechConfig = SPXSpeechConfiguration(subscription: speechSubscriptionKey, region: serviceRegion)
             } catch {
                 print("error \(error) happened")
                 speechConfig = nil
+                self.invokeMethod("speech.onException", arguments: "Speech 설정 오류: \(error)")
+                return
             }
+
             speechConfig?.speechRecognitionLanguage = lang
             speechConfig?.setPropertyTo(timeoutMs, by: SPXPropertyId.speechSegmentationSilenceTimeoutMs)
 
             let audioConfig = SPXAudioConfiguration()
-            let reco = try! SPXSpeechRecognizer(speechConfiguration: speechConfig!, audioConfiguration: audioConfig)
+
+            guard let config = speechConfig else {
+                self.invokeMethod("speech.onException", arguments: "Speech 설정을 초기화할 수 없습니다.")
+                return
+            }
+
+            let reco: SPXSpeechRecognizer
+            do {
+                reco = try SPXSpeechRecognizer(speechConfiguration: config, audioConfiguration: audioConfig)
+            } catch {
+                self.invokeMethod("speech.onException", arguments: "Speech 인식기 초기화 오류: \(error)")
+                return
+            }
 
             reco.addRecognizingEventHandler() {reco, evt in
                 if (self.simpleRecognitionTasks[taskId]?.isCanceled ?? false) { // Discard intermediate results if the task was cancelled
@@ -142,26 +208,35 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                 }
                 else {
                     print("Intermediate result: \(evt.result.text ?? "(no result)")\nTaskID: \(taskId)")
-                    self.azureChannel.invokeMethod("speech.onSpeech", arguments: evt.result.text)
+                    self.invokeMethod("speech.onSpeech", arguments: evt.result.text)
                 }
             }
 
-            let result = try! reco.recognizeOnce()
-            if (Task.isCancelled) {
-                print("Ignoring final result. TaskID: \(taskId)")
-            } else {
-                print("Final result: \(result.text ?? "(no result)")\nReason: \(result.reason.rawValue)\nTaskID: \(taskId)")
-                if result.reason != SPXResultReason.recognizedSpeech {
-                    let cancellationDetails = try! SPXCancellationDetails(fromCanceledRecognitionResult: result)
-                    print("Cancelled: \(cancellationDetails.description), \(cancellationDetails.errorDetails)\nTaskID: \(taskId)")
-                    print("Did you set the speech resource key and region values?")
-                    self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: "")
+            do {
+                let result = try reco.recognizeOnce()
+                if (Task.isCancelled) {
+                    print("Ignoring final result. TaskID: \(taskId)")
+                } else {
+                    print("Final result: \(result.text ?? "(no result)")\nReason: \(result.reason.rawValue)\nTaskID: \(taskId)")
+                    if result.reason != SPXResultReason.recognizedSpeech {
+                        do {
+                            let cancellationDetails = try SPXCancellationDetails(fromCanceledRecognitionResult: result)
+                            print("Cancelled: \(cancellationDetails.description), \(cancellationDetails.errorDetails)\nTaskID: \(taskId)")
+                            print("Did you set the speech resource key and region values?")
+                        } catch {
+                            print("Error getting cancellation details: \(error)")
+                        }
+                        self.invokeMethod("speech.onFinalResponse", arguments: "")
+                    }
+                    else {
+                        self.invokeMethod("speech.onFinalResponse", arguments: result.text)
+                    }
                 }
-                else {
-                    self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
-                }
-
+            } catch {
+                print("Error in speech recognition: \(error)")
+                self.invokeMethod("speech.onException", arguments: "Speech 인식 오류: \(error)")
             }
+
             self.simpleRecognitionTasks.removeValue(forKey: taskId)
         }
         simpleRecognitionTasks[taskId] = SimpleRecognitionTask(task: task, isCanceled: false)
@@ -214,13 +289,13 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                 var speechConfig: SPXSpeechConfiguration?
                 var pronunciationAssessmentConfig: SPXPronunciationAssessmentConfiguration?
 
-                do {
-                    let audioSession = AVAudioSession.sharedInstance()
-                    // Request access to the microphone
-                    try audioSession.setCategory(AVAudioSession.Category.record, mode: AVAudioSession.Mode.default, options: AVAudioSession.CategoryOptions.allowBluetooth)
-                    try audioSession.setActive(true)
-                    print("Setting custom audio session")
+                // 오디오 세션 설정
+                if !setupAudioSession() {
+                    self.invokeMethod("speech.onException", arguments: "오디오 세션 설정에 실패했습니다.")
+                    return
+                }
 
+                do {
                     // Initialize speech recognizer and specify correct subscription key and service region
                     try speechConfig = SPXSpeechConfiguration(subscription: speechSubscriptionKey, region: serviceRegion)
                     try pronunciationAssessmentConfig = SPXPronunciationAssessmentConfiguration.init(
@@ -231,6 +306,8 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                 } catch {
                     print("Error occurred: \(error)")
                     speechConfig = nil
+                    self.invokeMethod("speech.onException", arguments: "Speech 설정 오류: \(error)")
+                    return
                 }
 
                 pronunciationAssessmentConfig?.enableProsodyAssessment()
@@ -247,9 +324,21 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                 speechConfig?.speechRecognitionLanguage = lang
                 speechConfig?.setPropertyTo(timeoutMs, by: SPXPropertyId.speechSegmentationSilenceTimeoutMs)
 
+                guard let config = speechConfig, let pronConfig = pronunciationAssessmentConfig else {
+                    self.invokeMethod("speech.onException", arguments: "Speech 설정을 초기화할 수 없습니다.")
+                    return
+                }
+
                 let audioConfig = SPXAudioConfiguration()
-                let reco = try! SPXSpeechRecognizer(speechConfiguration: speechConfig!, audioConfiguration: audioConfig)
-                try! pronunciationAssessmentConfig?.apply(to: reco)
+
+                let reco: SPXSpeechRecognizer
+                do {
+                    reco = try SPXSpeechRecognizer(speechConfiguration: config, audioConfiguration: audioConfig)
+                    try pronConfig.apply(to: reco)
+                } catch {
+                    self.invokeMethod("speech.onException", arguments: "Speech 인식기 초기화 오류: \(error)")
+                    return
+                }
 
                 reco.addRecognizingEventHandler() { reco, evt in
                     if (self.simpleRecognitionTasks[taskId]?.isCanceled ?? false) {
@@ -257,219 +346,166 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
                     }
                     else {
                         print("Intermediate result: \(evt.result.text ?? "(no result)")\nTaskID: \(taskId)")
-                        self.azureChannel.invokeMethod("speech.onSpeech", arguments: evt.result.text)
+                        self.invokeMethod("speech.onSpeech", arguments: evt.result.text)
                     }
                 }
 
-                let result = try! reco.recognizeOnce()
+                do {
+                    let result = try reco.recognizeOnce()
 
-                if (Task.isCancelled) {
-                    print("Ignoring final result. TaskID: \(taskId)")
-                } else {
-                    print("Final result: \(result.text ?? "(no result)")\nReason: \(result.reason.rawValue)\nTaskID: \(taskId)")
-                    let originalJson = result.properties?.getPropertyBy(SPXPropertyId.speechServiceResponseJsonResult)
-                    print("originalJson: \(originalJson ?? "(no result)")")
+                    if (Task.isCancelled) {
+                        print("Ignoring final result. TaskID: \(taskId)")
+                    } else {
+                        print("Final result: \(result.text ?? "(no result)")\nReason: \(result.reason.rawValue)\nTaskID: \(taskId)")
+                        let originalJson = result.properties?.getPropertyBy(SPXPropertyId.speechServiceResponseJsonResult)
+                        print("originalJson: \(originalJson ?? "(no result)")")
 
-                    if result.reason != SPXResultReason.recognizedSpeech {
-                        let cancellationDetails = try! SPXCancellationDetails(fromCanceledRecognitionResult: result)
-                        print("Cancelled: \(cancellationDetails.description), \(cancellationDetails.errorDetails)\nTaskID: \(taskId)")
-                        print("Did you set the speech resource key and region values?")
-                        self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: "")
-                        self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: "")
-                    }
-                    else {
-                        // 새로운 PronunciationAssessmentResult 클래스를 사용한 평가 결과 처리
-                        do {
-                            // PronunciationAssessmentResult 클래스를 이용해 결과 가져오기
-                            if let pronResult = SPXPronunciationAssessmentResult(result) {
-                                // PronunciationAssessmentResult에서 직접 모든 점수 추출
-                                let accuracyScore = pronResult.accuracyScore
-                                let fluencyScore = pronResult.fluencyScore
-                                let completenessScore = pronResult.completenessScore
-                                let prosodyScore = pronResult.prosodyScore
-                                let pronunciationScore = pronResult.pronunciationScore
-
-                                // 로그 메시지를 위한 StringBuilder
-                                var scoreLogBuilder = "Scores - Accuracy: %.2f, Prosody: %.2f, Fluency: %.2f, Completeness: %.2f, Pronunciation: %.2f"
-
-                                // 점수가 포함된 JSON 객체 생성
-                                var jsonBuilder: [String: Any] = [
-                                    "AccuracyScore": accuracyScore,
-                                    "ProsodyScore": prosodyScore,
-                                    "FluencyScore": fluencyScore,
-                                    "CompletenessScore": completenessScore,
-                                    "PronunciationScore": pronunciationScore
-                                ]
-
-                                // topic이 제공되었을 경우 ContentAssessment 결과 가져오기
-                                if let topic = topic {
-                                    do {
-                                        // ContentAssessmentResult 가져오기 시도
-                                        if let contentJsonString = result.properties?.getPropertyBy(SPXPropertyId.speechServiceResponseJsonResult),
-                                           let contentJsonData = contentJsonString.data(using: .utf8),
-                                           let contentJson = try? JSONSerialization.jsonObject(with: contentJsonData) as? [String: Any],
-                                           let nBestArray = contentJson["NBest"] as? [[String: Any]],
-                                           let firstNBest = nBestArray.first,
-                                           let contentAssessment = firstNBest["ContentAssessment"] as? [String: Any] {
-
-                                            // 문법 점수 가져오기
-                                            if let grammarScore = contentAssessment["GrammarScore"] as? Double {
-                                                jsonBuilder["GrammarScore"] = grammarScore
-                                                scoreLogBuilder += ", Grammar: %.2f"
-                                            }
-
-                                            // 어휘 점수 가져오기
-                                            if let vocabScore = contentAssessment["VocabularyScore"] as? Double {
-                                                jsonBuilder["VocabularyScore"] = vocabScore
-                                                scoreLogBuilder += ", Vocabulary: %.2f"
-                                            }
-
-                                            // 주제 점수 가져오기
-                                            if let topicScore = contentAssessment["TopicScore"] as? Double {
-                                                jsonBuilder["TopicScore"] = topicScore
-                                                scoreLogBuilder += ", Topic: %.2f"
-                                            }
-                                        }
-                                    } catch {
-                                        print("Error getting content assessment result: \(error)")
-                                    }
-                                }
-
-                                // 모든 점수 로깅
-                                print(String(format: scoreLogBuilder,
-                                            accuracyScore,
-                                            prosodyScore,
-                                            fluencyScore,
-                                            completenessScore,
-                                            pronunciationScore))
-
-                                // 단어 수준 평가 추가 (JSON에서 직접 추출)
-//                                if let originalJsonString = originalJson,
-//                                   let jsonData = originalJsonString.data(using: .utf8),
-//                                   let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-//                                   let nBestArray = jsonObject["NBest"] as? [[String: Any]],
-//                                   let firstNBest = nBestArray.first,
-//                                   let wordsArray = firstNBest["Words"] as? [[String: Any]] {
-//
-//                                    var processedWords: [[String: Any]] = []
-//
-//                                    for wordItem in wordsArray {
-//                                        var wordDict: [String: Any] = [:]
-//
-//                                        if let word = wordItem["Word"] as? String {
-//                                            wordDict["Word"] = word
-//                                        }
-//
-//                                        if let pronAssessment = wordItem["PronunciationAssessment"] as? [String: Any] {
-//                                            if let accuracyScore = pronAssessment["AccuracyScore"] as? Double {
-//                                                wordDict["AccuracyScore"] = accuracyScore
-//                                            }
-//
-//                                            if let errorType = pronAssessment["ErrorType"] as? String {
-//                                                wordDict["ErrorType"] = errorType
-//                                            }
-//                                        }
-//
-//                                        // 음소 레벨 정보 추가 (사용 가능한 경우)
-//                                        if granularity == .phoneme, let phonemesArray = wordItem["Phonemes"] as? [[String: Any]] {
-//                                            var processedPhonemes: [[String: Any]] = []
-//
-//                                            for phonemeItem in phonemesArray {
-//                                                var phonemeDict: [String: Any] = [:]
-//
-//                                                if let phoneme = phonemeItem["Phoneme"] as? String {
-//                                                    phonemeDict["Phoneme"] = phoneme
-//                                                }
-//
-//                                                if let phonemePronAssessment = phonemeItem["PronunciationAssessment"] as? [String: Any],
-//                                                   let accuracyScore = phonemePronAssessment["AccuracyScore"] as? Double {
-//                                                    phonemeDict["AccuracyScore"] = accuracyScore
-//                                                }
-//
-//                                                if !phonemeDict.isEmpty {
-//                                                    processedPhonemes.append(phonemeDict)
-//                                                }
-//                                            }
-//
-//                                            if !processedPhonemes.isEmpty {
-//                                                wordDict["Phonemes"] = processedPhonemes
-//                                            }
-//                                        }
-//
-//                                        if !wordDict.isEmpty {
-//                                            processedWords.append(wordDict)
-//                                        }
-//                                    }
-//
-//                                    if !processedWords.isEmpty {
-//                                        jsonBuilder["Words"] = processedWords
-//                                    }
-//                                }
-
-                                // 항상 원본 JSON을 응답에 포함
-                                jsonBuilder["OriginalResponseText"] = originalJson
-
-                                // 최종 JSON을 문자열로 변환
-                                let jsonData = try JSONSerialization.data(withJSONObject: jsonBuilder)
-                                let assessmentJson = String(data: jsonData, encoding: .utf8) ?? ""
-
-                                self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
-                                self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: assessmentJson)
-                            } else {
-                                // pronResult가 nil인 경우 직접 JSON 파싱으로 대체
-                                var jsonBuilder: [String: Any] = [:]
-                                if let originalJsonString = originalJson,
-                                   let jsonData = originalJsonString.data(using: .utf8),
-                                   let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                                   let nBestArray = jsonObject["NBest"] as? [[String: Any]],
-                                   let firstNBest = nBestArray.first,
-                                   let pronAssessment = firstNBest["PronunciationAssessment"] as? [String: Any] {
-
-                                    if let accuracyScore = pronAssessment["AccuracyScore"] as? Double {
-                                        jsonBuilder["AccuracyScore"] = accuracyScore
-                                    }
-                                    if let fluencyScore = pronAssessment["FluencyScore"] as? Double {
-                                        jsonBuilder["FluencyScore"] = fluencyScore
-                                    }
-                                    if let completenessScore = pronAssessment["CompletenessScore"] as? Double {
-                                        jsonBuilder["CompletenessScore"] = completenessScore
-                                    }
-                                    if let prosodyScore = pronAssessment["ProsodyScore"] as? Double {
-                                        jsonBuilder["ProsodyScore"] = prosodyScore
-                                    }
-                                    if let pronScore = pronAssessment["PronScore"] as? Double {
-                                        jsonBuilder["PronunciationScore"] = pronScore
-                                    }
-                                }
-
-                                // 항상 원본 JSON을 응답에 포함
-                                jsonBuilder["OriginalResponseText"] = originalJson
-
-                                // 최종 JSON을 문자열로 변환
-                                let jsonData = try JSONSerialization.data(withJSONObject: jsonBuilder)
-                                let assessmentJson = String(data: jsonData, encoding: .utf8) ?? ""
-
-                                self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
-                                self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: assessmentJson)
-                            }
-                        } catch {
-                            print("Error processing assessment results: \(error)")
-                            // 오류 발생 시 원본 JSON으로 fallback
-                            var fallbackJson: [String: Any] = [:]
-                            fallbackJson["OriginalResponseText"] = originalJson ?? ""
-
+                        if result.reason != SPXResultReason.recognizedSpeech {
                             do {
-                                let fallbackJsonData = try JSONSerialization.data(withJSONObject: fallbackJson)
-                                let fallbackJsonString = String(data: fallbackJsonData, encoding: .utf8) ?? ""
-                                self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
-                                self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: fallbackJsonString)
+                                let cancellationDetails = try SPXCancellationDetails(fromCanceledRecognitionResult: result)
+                                print("Cancelled: \(cancellationDetails.description), \(cancellationDetails.errorDetails)\nTaskID: \(taskId)")
+                                print("Did you set the speech resource key and region values?")
                             } catch {
-                                self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
-                                self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: originalJson)
+                                print("Error getting cancellation details: \(error)")
+                            }
+                            self.invokeMethod("speech.onFinalResponse", arguments: "")
+                            self.invokeMethod("speech.onAssessmentResult", arguments: "")
+                        }
+                        else {
+                            // 새로운 PronunciationAssessmentResult 클래스를 사용한 평가 결과 처리
+                            do {
+                                // PronunciationAssessmentResult 클래스를 이용해 결과 가져오기
+                                if let pronResult = SPXPronunciationAssessmentResult(result) {
+                                    // PronunciationAssessmentResult에서 직접 모든 점수 추출
+                                    let accuracyScore = pronResult.accuracyScore
+                                    let fluencyScore = pronResult.fluencyScore
+                                    let completenessScore = pronResult.completenessScore
+                                    let prosodyScore = pronResult.prosodyScore
+                                    let pronunciationScore = pronResult.pronunciationScore
+
+                                    // 로그 메시지를 위한 StringBuilder
+                                    var scoreLogBuilder = "Scores - Accuracy: %.2f, Prosody: %.2f, Fluency: %.2f, Completeness: %.2f, Pronunciation: %.2f"
+
+                                    // 점수가 포함된 JSON 객체 생성
+                                    var jsonBuilder: [String: Any] = [
+                                        "AccuracyScore": accuracyScore,
+                                        "ProsodyScore": prosodyScore,
+                                        "FluencyScore": fluencyScore,
+                                        "CompletenessScore": completenessScore,
+                                        "PronunciationScore": pronunciationScore
+                                    ]
+
+                                    // topic이 제공되었을 경우 ContentAssessment 결과 가져오기
+                                    if let topic = topic {
+                                        do {
+                                            // ContentAssessmentResult 가져오기 시도
+                                            if let contentJsonString = result.properties?.getPropertyBy(SPXPropertyId.speechServiceResponseJsonResult),
+                                               let contentJsonData = contentJsonString.data(using: .utf8),
+                                               let contentJson = try? JSONSerialization.jsonObject(with: contentJsonData) as? [String: Any],
+                                               let nBestArray = contentJson["NBest"] as? [[String: Any]],
+                                               let firstNBest = nBestArray.first,
+                                               let contentAssessment = firstNBest["ContentAssessment"] as? [String: Any] {
+
+                                                // 문법 점수 가져오기
+                                                if let grammarScore = contentAssessment["GrammarScore"] as? Double {
+                                                    jsonBuilder["GrammarScore"] = grammarScore
+                                                    scoreLogBuilder += ", Grammar: %.2f"
+                                                }
+
+                                                // 어휘 점수 가져오기
+                                                if let vocabScore = contentAssessment["VocabularyScore"] as? Double {
+                                                    jsonBuilder["VocabularyScore"] = vocabScore
+                                                    scoreLogBuilder += ", Vocabulary: %.2f"
+                                                }
+
+                                                // 주제 점수 가져오기
+                                                if let topicScore = contentAssessment["TopicScore"] as? Double {
+                                                    jsonBuilder["TopicScore"] = topicScore
+                                                    scoreLogBuilder += ", Topic: %.2f"
+                                                }
+                                            }
+                                        } catch {
+                                            print("Error getting content assessment result: \(error)")
+                                        }
+                                    }
+
+                                    // 모든 점수 로깅
+                                    print(String(format: scoreLogBuilder,
+                                                accuracyScore,
+                                                prosodyScore,
+                                                fluencyScore,
+                                                completenessScore,
+                                                pronunciationScore))
+
+                                    // 항상 원본 JSON을 응답에 포함
+                                    jsonBuilder["OriginalResponseText"] = originalJson
+
+                                    // 최종 JSON을 문자열로 변환
+                                    let jsonData = try JSONSerialization.data(withJSONObject: jsonBuilder)
+                                    let assessmentJson = String(data: jsonData, encoding: .utf8) ?? ""
+
+                                    self.invokeMethod("speech.onFinalResponse", arguments: result.text)
+                                    self.invokeMethod("speech.onAssessmentResult", arguments: assessmentJson)
+                                } else {
+                                    // pronResult가 nil인 경우 직접 JSON 파싱으로 대체
+                                    var jsonBuilder: [String: Any] = [:]
+                                    if let originalJsonString = originalJson,
+                                       let jsonData = originalJsonString.data(using: .utf8),
+                                       let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                                       let nBestArray = jsonObject["NBest"] as? [[String: Any]],
+                                       let firstNBest = nBestArray.first,
+                                       let pronAssessment = firstNBest["PronunciationAssessment"] as? [String: Any] {
+
+                                        if let accuracyScore = pronAssessment["AccuracyScore"] as? Double {
+                                            jsonBuilder["AccuracyScore"] = accuracyScore
+                                        }
+                                        if let fluencyScore = pronAssessment["FluencyScore"] as? Double {
+                                            jsonBuilder["FluencyScore"] = fluencyScore
+                                        }
+                                        if let completenessScore = pronAssessment["CompletenessScore"] as? Double {
+                                            jsonBuilder["CompletenessScore"] = completenessScore
+                                        }
+                                        if let prosodyScore = pronAssessment["ProsodyScore"] as? Double {
+                                            jsonBuilder["ProsodyScore"] = prosodyScore
+                                        }
+                                        if let pronScore = pronAssessment["PronScore"] as? Double {
+                                            jsonBuilder["PronunciationScore"] = pronScore
+                                        }
+                                    }
+
+                                    // 항상 원본 JSON을 응답에 포함
+                                    jsonBuilder["OriginalResponseText"] = originalJson
+
+                                    // 최종 JSON을 문자열로 변환
+                                    let jsonData = try JSONSerialization.data(withJSONObject: jsonBuilder)
+                                    let assessmentJson = String(data: jsonData, encoding: .utf8) ?? ""
+
+                                    self.invokeMethod("speech.onFinalResponse", arguments: result.text)
+                                    self.invokeMethod("speech.onAssessmentResult", arguments: assessmentJson)
+                                }
+                            } catch {
+                                print("Error processing assessment results: \(error)")
+                                // 오류 발생 시 원본 JSON으로 fallback
+                                var fallbackJson: [String: Any] = [:]
+                                fallbackJson["OriginalResponseText"] = originalJson ?? ""
+
+                                do {
+                                    let fallbackJsonData = try JSONSerialization.data(withJSONObject: fallbackJson)
+                                    let fallbackJsonString = String(data: fallbackJsonData, encoding: .utf8) ?? ""
+                                    self.invokeMethod("speech.onFinalResponse", arguments: result.text)
+                                    self.invokeMethod("speech.onAssessmentResult", arguments: fallbackJsonString)
+                                } catch {
+                                    self.invokeMethod("speech.onFinalResponse", arguments: result.text)
+                                    self.invokeMethod("speech.onAssessmentResult", arguments: originalJson)
+                                }
                             }
                         }
                     }
+                } catch {
+                    print("Error in speech recognition: \(error)")
+                    self.invokeMethod("speech.onException", arguments: "Speech 인식 오류: \(error)")
                 }
+
                 self.simpleRecognitionTasks.removeValue(forKey: taskId)
             }
 
@@ -492,7 +528,7 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
             print("Stopping continous recognition")
             do {
                 try continousSpeechRecognizer!.stopContinuousRecognition()
-                self.azureChannel.invokeMethod("speech.onRecognitionStopped", arguments: nil)
+                self.invokeMethod("speech.onRecognitionStopped", arguments: nil)
                 continousSpeechRecognizer = nil
                 continousListeningStarted = false
             }
@@ -502,134 +538,144 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
         }
         else {
             print("Starting continous recognition")
-            do {
-                let audioSession = AVAudioSession.sharedInstance()
-                // Request access to the microphone
-                try audioSession.setCategory(AVAudioSession.Category.record, mode: AVAudioSession.Mode.default, options: AVAudioSession.CategoryOptions.allowBluetooth)
-                try audioSession.setActive(true)
-                print("Setting custom audio session")
 
-                let speechConfig = try SPXSpeechConfiguration(subscription: speechSubscriptionKey, region: serviceRegion)
-                speechConfig.speechRecognitionLanguage = lang
-
-                let pronunciationAssessmentConfig = try SPXPronunciationAssessmentConfiguration.init(
-                    referenceText,
-                    gradingSystem: SPXPronunciationAssessmentGradingSystem.hundredMark,
-                    granularity: granularity,
-                    enableMiscue: enableMiscue)
-
-                pronunciationAssessmentConfig.phonemeAlphabet = phonemeAlphabet
-                pronunciationAssessmentConfig.enableProsodyAssessment()
-
-                if let nBestPhonemeCount = nBestPhonemeCount {
-                    pronunciationAssessmentConfig.nbestPhonemeCount = nBestPhonemeCount
+            // 권한 확인 후 진행
+            checkMicrophonePermission { granted in
+                if !granted {
+                    self.invokeMethod("speech.onException", arguments: "마이크 접근 권한이 없습니다.")
+                    return
                 }
 
-                let audioConfig = SPXAudioConfiguration()
-
-                continousSpeechRecognizer = try SPXSpeechRecognizer(speechConfiguration: speechConfig, audioConfiguration: audioConfig)
-                try pronunciationAssessmentConfig.apply(to: continousSpeechRecognizer!)
-
-                continousSpeechRecognizer!.addRecognizingEventHandler() {reco, evt in
-                    print("intermediate recognition result: \(evt.result.text ?? "(no result)")")
-                    self.azureChannel.invokeMethod("speech.onSpeech", arguments: evt.result.text)
+                // 오디오 세션 설정
+                if !self.setupAudioSession() {
+                    self.invokeMethod("speech.onException", arguments: "오디오 세션 설정에 실패했습니다.")
+                    return
                 }
 
-                continousSpeechRecognizer!.addRecognizedEventHandler({reco, evt in
-                    let result = evt.result
-                    print("Final result: \(result.text ?? "(no result)")\nReason: \(result.reason.rawValue)")
-                    let originalJson = result.properties?.getPropertyBy(SPXPropertyId.speechServiceResponseJsonResult)
-                    print("Original JSON: \(originalJson ?? "(no result)")")
+                do {
+                    let speechConfig = try SPXSpeechConfiguration(subscription: speechSubscriptionKey, region: serviceRegion)
+                    speechConfig.speechRecognitionLanguage = lang
 
-                    if result.reason == SPXResultReason.recognizedSpeech {
-                        // 새로운 PronunciationAssessmentResult 클래스를 사용한 평가 결과 처리
-                        do {
-                            if let pronResult = SPXPronunciationAssessmentResult(result) {
-                                // 기본 점수 추출
-                                var jsonBuilder: [String: Any] = [
-                                    "AccuracyScore": pronResult.accuracyScore,
-                                    "ProsodyScore": pronResult.prosodyScore,
-                                    "FluencyScore": pronResult.fluencyScore,
-                                    "CompletenessScore": pronResult.completenessScore,
-                                    "PronunciationScore": pronResult.pronunciationScore
-                                ]
+                    let pronunciationAssessmentConfig = try SPXPronunciationAssessmentConfiguration.init(
+                        referenceText,
+                        gradingSystem: SPXPronunciationAssessmentGradingSystem.hundredMark,
+                        granularity: granularity,
+                        enableMiscue: enableMiscue)
 
-                                // 항상 원본 JSON 포함
-                                jsonBuilder["OriginalResponseText"] = originalJson
+                    pronunciationAssessmentConfig.phonemeAlphabet = phonemeAlphabet
+                    pronunciationAssessmentConfig.enableProsodyAssessment()
 
-                                // JSON을 문자열로 변환
-                                let jsonData = try JSONSerialization.data(withJSONObject: jsonBuilder)
-                                let assessmentJson = String(data: jsonData, encoding: .utf8) ?? originalJson ?? ""
-
-                                self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
-                                self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: assessmentJson)
-                            } else {
-                                // pronResult가 nil인 경우 직접 JSON 파싱으로 대체
-                                var jsonBuilder: [String: Any] = [:]
-                                if let originalJsonString = originalJson,
-                                   let jsonData = originalJsonString.data(using: .utf8),
-                                   let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                                   let nBestArray = jsonObject["NBest"] as? [[String: Any]],
-                                   let firstNBest = nBestArray.first,
-                                   let pronAssessment = firstNBest["PronunciationAssessment"] as? [String: Any] {
-
-                                    if let accuracyScore = pronAssessment["AccuracyScore"] as? Double {
-                                        jsonBuilder["AccuracyScore"] = accuracyScore
-                                    }
-                                    if let fluencyScore = pronAssessment["FluencyScore"] as? Double {
-                                        jsonBuilder["FluencyScore"] = fluencyScore
-                                    }
-                                    if let completenessScore = pronAssessment["CompletenessScore"] as? Double {
-                                        jsonBuilder["CompletenessScore"] = completenessScore
-                                    }
-                                    if let prosodyScore = pronAssessment["ProsodyScore"] as? Double {
-                                        jsonBuilder["ProsodyScore"] = prosodyScore
-                                    }
-                                    if let pronScore = pronAssessment["PronScore"] as? Double {
-                                        jsonBuilder["PronunciationScore"] = pronScore
-                                    }
-                                }
-
-                                // 항상 원본 JSON을 응답에 포함
-                                jsonBuilder["OriginalResponseText"] = originalJson
-
-                                // 최종 JSON을 문자열로 변환
-                                let jsonData = try JSONSerialization.data(withJSONObject: jsonBuilder)
-                                let fallbackJsonString = String(data: jsonData, encoding: .utf8) ?? ""
-
-                                self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
-                                self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: fallbackJsonString)
-                            }
-                        } catch {
-                            print("Error processing assessment results: \(error)")
-
-                            // 오류 발생 시 원본 JSON 전달
-                            var fallbackJson: [String: Any] = [:]
-                            fallbackJson["OriginalResponseText"] = originalJson ?? ""
-
-                            do {
-                                let fallbackJsonData = try JSONSerialization.data(withJSONObject: fallbackJson)
-                                let fallbackJsonString = String(data: fallbackJsonData, encoding: .utf8) ?? ""
-                                self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
-                                self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: fallbackJsonString)
-                            } catch {
-                                self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
-                                self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: originalJson)
-                            }
-                        }
-                    } else {
-                        self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: result.text)
-                        self.azureChannel.invokeMethod("speech.onAssessmentResult", arguments: "")
+                    if let nBestPhonemeCount = nBestPhonemeCount {
+                        pronunciationAssessmentConfig.nbestPhonemeCount = nBestPhonemeCount
                     }
-                })
 
-                print("Listening...")
-                try continousSpeechRecognizer!.startContinuousRecognition()
-                self.azureChannel.invokeMethod("speech.onRecognitionStarted", arguments: nil)
-                continousListeningStarted = true
-            }
-            catch {
-                print("An unexpected error occurred: \(error)")
+                    let audioConfig = SPXAudioConfiguration()
+
+                    self.continousSpeechRecognizer = try SPXSpeechRecognizer(speechConfiguration: speechConfig, audioConfiguration: audioConfig)
+                    try pronunciationAssessmentConfig.apply(to: self.continousSpeechRecognizer!)
+
+                    self.continousSpeechRecognizer!.addRecognizingEventHandler() {reco, evt in
+                        print("intermediate recognition result: \(evt.result.text ?? "(no result)")")
+                        self.invokeMethod("speech.onSpeech", arguments: evt.result.text)
+                    }
+
+                    self.continousSpeechRecognizer!.addRecognizedEventHandler({reco, evt in
+                        let result = evt.result
+                        print("Final result: \(result.text ?? "(no result)")\nReason: \(result.reason.rawValue)")
+                        let originalJson = result.properties?.getPropertyBy(SPXPropertyId.speechServiceResponseJsonResult)
+                        print("Original JSON: \(originalJson ?? "(no result)")")
+
+                        if result.reason == SPXResultReason.recognizedSpeech {
+                            // 새로운 PronunciationAssessmentResult 클래스를 사용한 평가 결과 처리
+                            do {
+                                if let pronResult = SPXPronunciationAssessmentResult(result) {
+                                    // 기본 점수 추출
+                                    var jsonBuilder: [String: Any] = [
+                                        "AccuracyScore": pronResult.accuracyScore,
+                                        "ProsodyScore": pronResult.prosodyScore,
+                                        "FluencyScore": pronResult.fluencyScore,
+                                        "CompletenessScore": pronResult.completenessScore,
+                                        "PronunciationScore": pronResult.pronunciationScore
+                                    ]
+
+                                    // 항상 원본 JSON 포함
+                                    jsonBuilder["OriginalResponseText"] = originalJson
+
+                                    // JSON을 문자열로 변환
+                                    let jsonData = try JSONSerialization.data(withJSONObject: jsonBuilder)
+                                    let assessmentJson = String(data: jsonData, encoding: .utf8) ?? originalJson ?? ""
+
+                                    self.invokeMethod("speech.onFinalResponse", arguments: result.text)
+                                    self.invokeMethod("speech.onAssessmentResult", arguments: assessmentJson)
+                                } else {
+                                    // pronResult가 nil인 경우 직접 JSON 파싱으로 대체
+                                    var jsonBuilder: [String: Any] = [:]
+                                    if let originalJsonString = originalJson,
+                                       let jsonData = originalJsonString.data(using: .utf8),
+                                       let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                                       let nBestArray = jsonObject["NBest"] as? [[String: Any]],
+                                       let firstNBest = nBestArray.first,
+                                       let pronAssessment = firstNBest["PronunciationAssessment"] as? [String: Any] {
+
+                                        if let accuracyScore = pronAssessment["AccuracyScore"] as? Double {
+                                            jsonBuilder["AccuracyScore"] = accuracyScore
+                                        }
+                                        if let fluencyScore = pronAssessment["FluencyScore"] as? Double {
+                                            jsonBuilder["FluencyScore"] = fluencyScore
+                                        }
+                                        if let completenessScore = pronAssessment["CompletenessScore"] as? Double {
+                                            jsonBuilder["CompletenessScore"] = completenessScore
+                                        }
+                                        if let prosodyScore = pronAssessment["ProsodyScore"] as? Double {
+                                            jsonBuilder["ProsodyScore"] = prosodyScore
+                                        }
+                                        if let pronScore = pronAssessment["PronScore"] as? Double {
+                                            jsonBuilder["PronunciationScore"] = pronScore
+                                        }
+                                    }
+
+                                    // 항상 원본 JSON을 응답에 포함
+                                    jsonBuilder["OriginalResponseText"] = originalJson
+
+                                    // 최종 JSON을 문자열로 변환
+                                    let jsonData = try JSONSerialization.data(withJSONObject: jsonBuilder)
+                                    let fallbackJsonString = String(data: jsonData, encoding: .utf8) ?? ""
+
+                                    self.invokeMethod("speech.onFinalResponse", arguments: result.text)
+                                    self.invokeMethod("speech.onAssessmentResult", arguments: fallbackJsonString)
+                                }
+                            } catch {
+                                print("Error processing assessment results: \(error)")
+
+                                // 오류 발생 시 원본 JSON 전달
+                                var fallbackJson: [String: Any] = [:]
+                                fallbackJson["OriginalResponseText"] = originalJson ?? ""
+
+                                do {
+                                    let fallbackJsonData = try JSONSerialization.data(withJSONObject: fallbackJson)
+                                    let fallbackJsonString = String(data: fallbackJsonData, encoding: .utf8) ?? ""
+                                    self.invokeMethod("speech.onFinalResponse", arguments: result.text)
+                                    self.invokeMethod("speech.onAssessmentResult", arguments: fallbackJsonString)
+                                } catch {
+                                    self.invokeMethod("speech.onFinalResponse", arguments: result.text)
+                                    self.invokeMethod("speech.onAssessmentResult", arguments: originalJson)
+                                }
+                            }
+                        } else {
+                            self.invokeMethod("speech.onFinalResponse", arguments: result.text)
+                            self.invokeMethod("speech.onAssessmentResult", arguments: "")
+                        }
+                    })
+
+                    print("Listening...")
+                    try self.continousSpeechRecognizer!.startContinuousRecognition()
+                    self.invokeMethod("speech.onRecognitionStarted", arguments: nil)
+                    self.continousListeningStarted = true
+                }
+                catch {
+                    print("An unexpected error occurred: \(error)")
+                    self.invokeMethod("speech.onException", arguments: "연속 인식 시작 오류: \(error)")
+                }
             }
         }
     }
@@ -639,7 +685,7 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
             print("Stopping continous recognition")
             do {
                 try continousSpeechRecognizer!.stopContinuousRecognition()
-                self.azureChannel.invokeMethod("speech.onRecognitionStopped", arguments: nil)
+                self.invokeMethod("speech.onRecognitionStopped", arguments: nil)
                 continousSpeechRecognizer = nil
                 continousListeningStarted = false
             }
@@ -649,37 +695,46 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
         }
         else {
             print("Starting continous recognition")
-            do {
-                let audioSession = AVAudioSession.sharedInstance()
-                // Request access to the microphone
-                try audioSession.setCategory(AVAudioSession.Category.record, mode: AVAudioSession.Mode.default, options: AVAudioSession.CategoryOptions.allowBluetooth)
-                try audioSession.setActive(true)
-                print("Setting custom audio session")
+
+            // 권한 확인 후 진행
+            checkMicrophonePermission { granted in
+                if !granted {
+                    self.invokeMethod("speech.onException", arguments: "마이크 접근 권한이 없습니다.")
+                    return
+                }
+
+                // 오디오 세션 설정
+                if !self.setupAudioSession() {
+                    self.invokeMethod("speech.onException", arguments: "오디오 세션 설정에 실패했습니다.")
+                    return
+                }
+
+                do {
+                    let speechConfig = try SPXSpeechConfiguration(subscription: speechSubscriptionKey, region: serviceRegion)
+                    speechConfig.speechRecognitionLanguage = lang
+
+                    let audioConfig = SPXAudioConfiguration()
+
+                    self.continousSpeechRecognizer = try SPXSpeechRecognizer(speechConfiguration: speechConfig, audioConfiguration: audioConfig)
+                    self.continousSpeechRecognizer!.addRecognizingEventHandler() {reco, evt in
+                        print("intermediate recognition result: \(evt.result.text ?? "(no result)")")
+                        self.invokeMethod("speech.onSpeech", arguments: evt.result.text)
+                    }
+                    self.continousSpeechRecognizer!.addRecognizedEventHandler({reco, evt in
+                        let res = evt.result.text
+                        print("final result \(res ?? "")")
+                        self.invokeMethod("speech.onFinalResponse", arguments: res)
+                    })
+                    print("Listening...")
+                    try self.continousSpeechRecognizer!.startContinuousRecognition()
+                    self.invokeMethod("speech.onRecognitionStarted", arguments: nil)
+                    self.continousListeningStarted = true
+                }
+                catch {
+                    print("An unexpected error occurred: \(error)")
+                    self.invokeMethod("speech.onException", arguments: "연속 인식 시작 오류: \(error)")
+                }
             }
-            catch {
-                print("An unexpected error occurred")
-            }
-
-            let speechConfig = try! SPXSpeechConfiguration(subscription: speechSubscriptionKey, region: serviceRegion)
-
-            speechConfig.speechRecognitionLanguage = lang
-
-            let audioConfig = SPXAudioConfiguration()
-
-            continousSpeechRecognizer = try! SPXSpeechRecognizer(speechConfiguration: speechConfig, audioConfiguration: audioConfig)
-            continousSpeechRecognizer!.addRecognizingEventHandler() {reco, evt in
-                print("intermediate recognition result: \(evt.result.text ?? "(no result)")")
-                self.azureChannel.invokeMethod("speech.onSpeech", arguments: evt.result.text)
-            }
-            continousSpeechRecognizer!.addRecognizedEventHandler({reco, evt in
-                let res = evt.result.text
-                print("final result \(res!)")
-                self.azureChannel.invokeMethod("speech.onFinalResponse", arguments: res)
-            })
-            print("Listening...")
-            try! continousSpeechRecognizer!.startContinuousRecognition()
-            self.azureChannel.invokeMethod("speech.onRecognitionStarted", arguments: nil)
-            continousListeningStarted = true
         }
     }
 
@@ -688,14 +743,17 @@ public class SwiftAzureSpeechRecognitionPlugin: NSObject, FlutterPlugin {
             print("Stopping continous recognition")
             do {
                 try continousSpeechRecognizer!.stopContinuousRecognition()
-                self.azureChannel.invokeMethod("speech.onRecognitionStopped", arguments: nil)
+                self.invokeMethod("speech.onRecognitionStopped", arguments: nil)
                 continousSpeechRecognizer = nil
                 continousListeningStarted = false
                 flutterResult(true)
             }
             catch {
-                print("Error occurred stopping continous recognition")
+                print("Error occurred stopping continous recognition: \(error)")
+                flutterResult(FlutterError(code: "STOP_ERROR", message: "Error stopping continuous recognition", details: error.localizedDescription))
             }
+        } else {
+            flutterResult(true) // 이미 중지된 상태
         }
     }
 }
