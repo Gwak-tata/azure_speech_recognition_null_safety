@@ -264,10 +264,6 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                             val prosodyScore = pronResult.getProsodyScore()
                             val pronunciationScore = pronResult.getPronunciationScore()
 
-                            // StringBuilder for log message
-                            val scoreLogBuilder = StringBuilder("Scores - Accuracy: %.2f, Prosody: %.2f, Fluency: %.2f, " +
-                                    "Completeness: %.2f, Pronunciation: %.2f")
-
                             // Create a JSON object with the scores
                             val jsonObjectBuilder = javax.json.Json.createObjectBuilder()
                                 .add("AccuracyScore", accuracyScore)
@@ -275,6 +271,11 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                                 .add("FluencyScore", fluencyScore)
                                 .add("CompletenessScore", completenessScore)
                                 .add("PronunciationScore", pronunciationScore)
+
+                            // 변경된 부분: 문자열 보간법 사용 (에러의 원인 부분 수정)
+                            var logMessage = "Scores - Accuracy: $accuracyScore, Prosody: $prosodyScore, " +
+                                    "Fluency: $fluencyScore, Completeness: $completenessScore, " +
+                                    "Pronunciation: $pronunciationScore"
 
                             // Get content assessment scores if topic was provided
                             if (topic != null) {
@@ -292,7 +293,8 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                                                 val getGrammarMethod = contentClass.getMethod("getGrammarScore")
                                                 val grammarScore = (getGrammarMethod.invoke(contentResult) as? Double) ?: 0.0
                                                 jsonObjectBuilder.add("GrammarScore", grammarScore)
-                                                scoreLogBuilder.append(", Grammar: %.2f")
+                                                // 변경된 부분: 문자열 보간법 사용
+                                                logMessage += ", Grammar: $grammarScore"
                                             } catch (e: Exception) {
                                                 Log.e(logTag, "Error getting grammar score: ${e.message}", e)
                                             }
@@ -302,7 +304,8 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                                                 val getVocabMethod = contentClass.getMethod("getVocabularyScore")
                                                 val vocabScore = (getVocabMethod.invoke(contentResult) as? Double) ?: 0.0
                                                 jsonObjectBuilder.add("VocabularyScore", vocabScore)
-                                                scoreLogBuilder.append(", Vocabulary: %.2f")
+                                                // 변경된 부분: 문자열 보간법 사용
+                                                logMessage += ", Vocabulary: $vocabScore"
                                             } catch (e: Exception) {
                                                 Log.e(logTag, "Error getting vocabulary score: ${e.message}", e)
                                             }
@@ -312,7 +315,8 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                                                 val getTopicMethod = contentClass.getMethod("getTopicScore")
                                                 val topicScore = (getTopicMethod.invoke(contentResult) as? Double) ?: 0.0
                                                 jsonObjectBuilder.add("TopicScore", topicScore)
-                                                scoreLogBuilder.append(", Topic: %.2f")
+                                                // 변경된 부분: 문자열 보간법 사용
+                                                logMessage += ", Topic: $topicScore"
                                             } catch (e: Exception) {
                                                 Log.e(logTag, "Error getting topic score: ${e.message}", e)
                                             }
@@ -323,138 +327,9 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                                 }
                             }
 
-                            // Log all the scores
-                            Log.i(logTag, String.format(
-                                scoreLogBuilder.toString(),
-                                accuracyScore,
-                                prosodyScore,
-                                fluencyScore,
-                                completenessScore,
-                                pronunciationScore
-                                // Content assessment scores would go here if they were included in the log message
-                            ))
+                            // 변경된 부분: 단순히 logMessage 출력
+                            Log.i(logTag, logMessage)
 
-                            // Add word-level assessment if available
-//                            try {
-//                                val wordsMethod = pronResult.javaClass.getMethod("getWords")
-//                                val words = wordsMethod.invoke(pronResult) as? List<*>
-//
-//                                if (words != null && words.isNotEmpty()) {
-//                                    val wordsArrayBuilder = javax.json.Json.createArrayBuilder()
-//
-//                                    for (wordObj in words) {
-//                                        if (wordObj != null) {
-//                                            val wordBuilder = javax.json.Json.createObjectBuilder()
-//
-//                                            // Get word text using reflection
-//                                            val getWordMethod = wordObj.javaClass.getMethod("getWord")
-//                                            val wordText = getWordMethod.invoke(wordObj) as? String
-//                                            wordBuilder.add("Word", wordText ?: "")
-//
-//                                            // Get accuracy score using reflection
-//                                            val getAccuracyMethod = wordObj.javaClass.getMethod("getAccuracyScore")
-//                                            val accuracyScoreValue = (getAccuracyMethod.invoke(wordObj) as? Double) ?: 0.0
-//                                            wordBuilder.add("AccuracyScore", accuracyScoreValue)
-//
-//                                            // Try to get error type if available
-//                                            try {
-//                                                val getErrorTypeMethod = wordObj.javaClass.getMethod("getErrorType")
-//                                                val errorTypeObj = getErrorTypeMethod.invoke(wordObj)
-//                                                val errorType = errorTypeObj?.toString() ?: "Unknown"
-//                                                wordBuilder.add("ErrorType", errorType)
-//                                            } catch (e: Exception) {
-//                                                // If error type method isn't available, use a default
-//                                                wordBuilder.add("ErrorType", "Unknown")
-//                                            }
-//
-//                                            wordsArrayBuilder.add(wordBuilder)
-//                                        }
-//                                    }
-//
-//                                    jsonObjectBuilder.add("Words", wordsArrayBuilder)
-//                                }
-//                            } catch (e: Exception) {
-//                                Log.e(logTag, "Error accessing word-level details: ${e.message}", e)
-//                            }
-
-                            // PronunciationAssessmentResult에는 getPhonemes() 메서드가 없는 것 같습니다.
-                            // 원본 JSON 응답에서 음소 정보를 추출하는 방식으로 대체합니다.
-//                            try {
-//                                if (originalJson != null && originalJson.isNotEmpty()) {
-//                                    val jsonReader = Json.createReader(StringReader(originalJson))
-//                                    val originalJsonObject = jsonReader.readObject()
-//                                    jsonReader.close()
-//
-//                                    // NBest 배열에서 첫 번째 결과의 Words 배열 검색
-//                                    val nBestArray = originalJsonObject.getJsonArray("NBest")
-//                                    if (nBestArray != null && nBestArray.size > 0) {
-//                                        val firstResult = nBestArray.getJsonObject(0)
-//                                        val wordsArray = firstResult.getJsonArray("Words")
-//
-//                                        if (wordsArray != null) {
-//                                            val allPhonemesBuilder = javax.json.Json.createArrayBuilder()
-//
-//                                            // 각 단어에서 음소 정보 추출
-//                                            for (i in 0 until wordsArray.size) {
-//                                                val wordObj = wordsArray.getJsonObject(i)
-//                                                val phonemesArray = wordObj.getJsonArray("Phonemes")
-//
-//                                                if (phonemesArray != null) {
-//                                                    for (j in 0 until phonemesArray.size) {
-//                                                        val phonemeObj = phonemesArray.getJsonObject(j)
-//                                                        val phonemeBuilder = javax.json.Json.createObjectBuilder()
-//
-//                                                        // 음소 텍스트 추출
-//                                                        if (phonemeObj.containsKey("Phoneme")) {
-//                                                            phonemeBuilder.add("Phoneme", phonemeObj.getString("Phoneme"))
-//                                                        }
-//
-//                                                        // 정확도 점수 추출
-//                                                        if (phonemeObj.containsKey("PronunciationAssessment") &&
-//                                                            phonemeObj.getJsonObject("PronunciationAssessment").containsKey("AccuracyScore")) {
-//                                                            phonemeBuilder.add("AccuracyScore",
-//                                                                phonemeObj.getJsonObject("PronunciationAssessment").getJsonNumber("AccuracyScore").doubleValue())
-//                                                        }
-//
-//                                                        // 오프셋 및 지속 시간 추가 (있는 경우)
-//                                                        if (phonemeObj.containsKey("Offset")) {
-//                                                            phonemeBuilder.add("Offset", phonemeObj.getJsonNumber("Offset").longValue())
-//                                                        }
-//
-//                                                        if (phonemeObj.containsKey("Duration")) {
-//                                                            phonemeBuilder.add("Duration", phonemeObj.getJsonNumber("Duration").longValue())
-//                                                        }
-//
-//                                                        allPhonemesBuilder.add(phonemeBuilder)
-//                                                    }
-//                                                }
-//                                            }
-//
-//                                            jsonObjectBuilder.add("Phonemes", allPhonemesBuilder)
-//                                        }
-//                                    }
-//                                }
-//                            } catch (e: Exception) {
-//                                Log.e(logTag, "Error extracting phoneme details from original JSON: ${e.message}", e)
-//                            }
-
-                            // Convert the original JSON to include it in our response if possible
-//                            if (originalJson != null && originalJson.isNotEmpty()) {
-//                                try {
-//                                    val jsonReader = Json.createReader(StringReader(originalJson))
-//                                    val originalJsonObject = jsonReader.readObject()
-//                                    jsonReader.close()
-//
-//                                    // Extract NBest results if available
-//                                    val nBestArray = originalJsonObject.getJsonArray("NBest")
-//                                    if (nBestArray != null && nBestArray.size > 0) {
-//                                        jsonObjectBuilder.add("NBest", nBestArray)
-//                                    }
-//                                } catch (e: Exception) {
-//                                    Log.e(logTag, "Error parsing original JSON: ${e.message}", e)
-//                                    jsonObjectBuilder.add("OriginalResponseText", originalJson)
-//                                }
-//                            }
                             jsonObjectBuilder.add("OriginalResponseText", originalJson)
 
                             val assessmentJson = jsonObjectBuilder.build().toString()
