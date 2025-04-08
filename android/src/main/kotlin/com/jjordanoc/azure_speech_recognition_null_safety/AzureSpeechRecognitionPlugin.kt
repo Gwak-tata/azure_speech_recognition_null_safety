@@ -254,84 +254,100 @@ class AzureSpeechRecognitionPlugin : FlutterPlugin, Activity(), MethodCallHandle
                 if (task_global === task) {
                     if (result.reason == ResultReason.RecognizedSpeech) {
                         try {
-                            // Use the new PronunciationAssessmentResult class to get assessment results
-                            val pronResult = PronunciationAssessmentResult.fromResult(result)
-
-                            // Extract all scores directly from the PronunciationAssessmentResult
-                            val accuracyScore = pronResult.getAccuracyScore()
-                            val fluencyScore = pronResult.getFluencyScore()
-                            val completenessScore = pronResult.getCompletenessScore()
-                            val prosodyScore = pronResult.getProsodyScore()
-                            val pronunciationScore = pronResult.getPronunciationScore()
-
-                            // Create a JSON object with the scores
+                            // Create a JSON object builder for scores
                             val jsonObjectBuilder = javax.json.Json.createObjectBuilder()
-                                .add("AccuracyScore", accuracyScore)
-                                .add("ProsodyScore", prosodyScore)
-                                .add("FluencyScore", fluencyScore)
-                                .add("CompletenessScore", completenessScore)
-                                .add("PronunciationScore", pronunciationScore)
 
-                            // 변경된 부분: 문자열 보간법 사용 (에러의 원인 부분 수정)
-                            var logMessage = "Scores - Accuracy: $accuracyScore, Prosody: $prosodyScore, " +
-                                    "Fluency: $fluencyScore, Completeness: $completenessScore, " +
-                                    "Pronunciation: $pronunciationScore"
+                            try {
+                                // Use the PronunciationAssessmentResult class to get assessment results
+                                val pronResult = PronunciationAssessmentResult.fromResult(result)
 
-                            // Get content assessment scores if topic was provided
-                            if (topic != null) {
-                                try {
-                                    // Try to get the content assessment result
-                                    val getContentMethod = pronResult.javaClass.getMethod("getContentAssessmentResult")
-                                    if (getContentMethod != null) {
-                                        val contentResult = getContentMethod.invoke(pronResult)
+                                // Check if pronResult is not null before accessing properties
+                                if (pronResult != null) {
+                                    // Extract all scores directly from the PronunciationAssessmentResult
+                                    // Use safe calls to avoid NPE if any score method returns null
+                                    val accuracyScore = pronResult.getAccuracyScore() ?: 0.0
+                                    val fluencyScore = pronResult.getFluencyScore() ?: 0.0
+                                    val completenessScore = pronResult.getCompletenessScore() ?: 0.0
+                                    val prosodyScore = pronResult.getProsodyScore() ?: 0.0
+                                    val pronunciationScore = pronResult.getPronunciationScore() ?: 0.0
 
-                                        if (contentResult != null) {
-                                            val contentClass = contentResult.javaClass
+                                    // Add scores to JSON object
+                                    jsonObjectBuilder.add("AccuracyScore", accuracyScore)
+                                    jsonObjectBuilder.add("ProsodyScore", prosodyScore)
+                                    jsonObjectBuilder.add("FluencyScore", fluencyScore)
+                                    jsonObjectBuilder.add("CompletenessScore", completenessScore)
+                                    jsonObjectBuilder.add("PronunciationScore", pronunciationScore)
 
-                                            // Get grammar score
-                                            try {
-                                                val getGrammarMethod = contentClass.getMethod("getGrammarScore")
-                                                val grammarScore = (getGrammarMethod.invoke(contentResult) as? Double) ?: 0.0
-                                                jsonObjectBuilder.add("GrammarScore", grammarScore)
-                                                // 변경된 부분: 문자열 보간법 사용
-                                                logMessage += ", Grammar: $grammarScore"
-                                            } catch (e: Exception) {
-                                                Log.e(logTag, "Error getting grammar score: ${e.message}", e)
+                                    // Log scores
+                                    val logMessage = "Scores - Accuracy: $accuracyScore, Prosody: $prosodyScore, " +
+                                            "Fluency: $fluencyScore, Completeness: $completenessScore, " +
+                                            "Pronunciation: $pronunciationScore"
+
+                                    // Get content assessment scores if topic was provided
+                                    if (topic != null) {
+                                        try {
+                                            // Try to get the content assessment result with null safety
+                                            val getContentMethod = pronResult.javaClass.getMethod("getContentAssessmentResult")
+                                            val contentResult = getContentMethod.invoke(pronResult)
+
+                                            if (contentResult != null) {
+                                                val contentClass = contentResult.javaClass
+                                                var grammarScore = 0.0
+                                                var vocabScore = 0.0
+                                                var topicScore = 0.0
+                                                var contentLogMessage = ""
+
+                                                // Get grammar score
+                                                try {
+                                                    val getGrammarMethod = contentClass.getMethod("getGrammarScore")
+                                                    grammarScore = (getGrammarMethod.invoke(contentResult) as? Double) ?: 0.0
+                                                    jsonObjectBuilder.add("GrammarScore", grammarScore)
+                                                    contentLogMessage += ", Grammar: $grammarScore"
+                                                } catch (e: Exception) {
+                                                    Log.e(logTag, "Error getting grammar score: ${e.message}", e)
+                                                }
+
+                                                // Get vocabulary score
+                                                try {
+                                                    val getVocabMethod = contentClass.getMethod("getVocabularyScore")
+                                                    vocabScore = (getVocabMethod.invoke(contentResult) as? Double) ?: 0.0
+                                                    jsonObjectBuilder.add("VocabularyScore", vocabScore)
+                                                    contentLogMessage += ", Vocabulary: $vocabScore"
+                                                } catch (e: Exception) {
+                                                    Log.e(logTag, "Error getting vocabulary score: ${e.message}", e)
+                                                }
+
+                                                // Get topic score
+                                                try {
+                                                    val getTopicMethod = contentClass.getMethod("getTopicScore")
+                                                    topicScore = (getTopicMethod.invoke(contentResult) as? Double) ?: 0.0
+                                                    jsonObjectBuilder.add("TopicScore", topicScore)
+                                                    contentLogMessage += ", Topic: $topicScore"
+                                                } catch (e: Exception) {
+                                                    Log.e(logTag, "Error getting topic score: ${e.message}", e)
+                                                }
+
+                                                // Log content assessment scores
+                                                Log.i(logTag, logMessage + contentLogMessage)
+                                            } else {
+                                                Log.i(logTag, logMessage)
                                             }
-
-                                            // Get vocabulary score
-                                            try {
-                                                val getVocabMethod = contentClass.getMethod("getVocabularyScore")
-                                                val vocabScore = (getVocabMethod.invoke(contentResult) as? Double) ?: 0.0
-                                                jsonObjectBuilder.add("VocabularyScore", vocabScore)
-                                                // 변경된 부분: 문자열 보간법 사용
-                                                logMessage += ", Vocabulary: $vocabScore"
-                                            } catch (e: Exception) {
-                                                Log.e(logTag, "Error getting vocabulary score: ${e.message}", e)
-                                            }
-
-                                            // Get topic score
-                                            try {
-                                                val getTopicMethod = contentClass.getMethod("getTopicScore")
-                                                val topicScore = (getTopicMethod.invoke(contentResult) as? Double) ?: 0.0
-                                                jsonObjectBuilder.add("TopicScore", topicScore)
-                                                // 변경된 부분: 문자열 보간법 사용
-                                                logMessage += ", Topic: $topicScore"
-                                            } catch (e: Exception) {
-                                                Log.e(logTag, "Error getting topic score: ${e.message}", e)
-                                            }
+                                        } catch (e: Exception) {
+                                            Log.e(logTag, "Error getting content assessment result: ${e.message}", e)
+                                            Log.i(logTag, logMessage)
                                         }
+                                    } else {
+                                        Log.i(logTag, logMessage)
                                     }
-                                } catch (e: Exception) {
-                                    Log.e(logTag, "Error getting content assessment result: ${e.message}", e)
+                                } else {
+                                    Log.e(logTag, "PronunciationAssessmentResult is null")
                                 }
+                            } catch (e: Exception) {
+                                Log.e(logTag, "Error getting pronunciation assessment result: ${e.message}", e)
                             }
 
-                            // 변경된 부분: 단순히 logMessage 출력
-                            Log.i(logTag, logMessage)
-
-                            jsonObjectBuilder.add("OriginalResponseText", originalJson)
-
+                            // Always add original JSON response
+                            jsonObjectBuilder.add("OriginalResponseText", originalJson ?: "")
                             val assessmentJson = jsonObjectBuilder.build().toString()
 
                             invokeMethod("speech.onFinalResponse", s)
